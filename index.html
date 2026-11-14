@@ -28,6 +28,7 @@
       <button class="tab" data-model="M4">④ 要素曲线</button>
       <button class="tab" data-model="M5">⑤ 知识库</button>
       <button class="tab" data-model="M6">⑥ 实况天气</button>
+      <button class="tab" data-model="M7">⑦ 锋面气旋</button>
     </nav>
     <div class="top-actions">
       <button id="btnPrompt" class="ghost" title="查看完美提示词">提示词</button>
@@ -52,6 +53,12 @@
             <button data-view="top">俯视</button>
             <button data-view="cold">冷气团侧</button>
             <button data-view="warm">暖气团侧</button>
+          </div>
+          <div id="cycBar" class="chips" hidden aria-label="气旋发展阶段">
+            <button data-stage="0" class="on">① 初生</button>
+            <button data-stage="1">② 发展</button>
+            <button data-stage="2">③ 成熟</button>
+            <button data-stage="3">④ 消亡</button>
           </div>
           <div id="mapBar" class="chips" hidden aria-label="天气图模式">
             <button data-map="cyclone" class="on">锋面气旋</button>
@@ -79,7 +86,7 @@
         <button id="btnPlay" class="round" title="播放 / 暂停（空格）" aria-label="播放或暂停">▶</button>
         <div class="timeline">
           <input type="range" id="tSlider" min="0" max="1000" value="220" aria-label="时间轴" />
-          <div class="marks"><span>过境前</span><span>过境时</span><span>过境后</span></div>
+          <div class="marks"><span>过境前</span><span>过境时</span><span>过境后</span><span>消亡</span></div>
         </div>
         <div class="speeds" role="group" aria-label="播放速度">
           <button data-speed="0.5">0.5×</button>
@@ -232,6 +239,7 @@
 <script src="src/m2-section.js"></script>
 <script src="src/m3-map.js"></script>
 <script src="src/m4-chart.js"></script>
+<script src="src/m7-cyclone.js"></script>
 <script src="src/quiz.js"></script>
 <script src="src/scene3d.js"></script>
 <script src="src/live.js"></script>

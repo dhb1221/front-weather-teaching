@@ -75,6 +75,7 @@ const FILES = [
   'src/m2-section.js',
   'src/m3-map.js',
   'src/m4-chart.js',
+  'src/m7-cyclone.js',
   'src/live.js'
 ];
 
@@ -261,6 +262,43 @@ if (MODS.M3) {
 if (MODS.M4) {
   const bad = runDraws(MODS.M4, [[1200, 700], [390, 640]], ['cold', 'warm', 'stationary'].map((t) => ({ type: t })));
   ok('M4 三锋 × 两尺寸 × 五时刻 无异常', bad.length === 0, bad.slice(0, 3).join(' | '));
+}
+
+/* ---------- 3.5 锋面气旋演示（M7） ---------- */
+section('锋面气旋演示 M7');
+{
+  const MODS = sandbox.MODELS || {};
+  const ST = sandbox.CYCLONE_STAGES;
+  ok('CYCLONE_STAGES 有 4 个阶段', Array.isArray(ST) && ST.length === 4, String(ST && ST.length));
+  if (Array.isArray(ST)) {
+    let badStage = 0;
+    ST.forEach((st) => {
+      if (!st || !st.title || !st.desc) badStage++;
+      else if (!st.station || !st.station.A || !st.station.B || !st.station.C) badStage++;
+    });
+    ok('每阶段都有标题/说明/ABC 三站天气', badStage === 0, badStage + ' 个阶段缺字段');
+    const b = ST[1].station.B || {};
+    ok('B 站（冷锋过境）天气符合教材', /风/.test(b.wind || '') && /(雨|雷)/.test(b.rain || ''),
+      (b.wind || '') + ' / ' + (b.rain || ''));
+  }
+  ok('window.MODELS.M7 存在', !!(MODS.M7));
+  if (MODS.M7) {
+    const errs = [];
+    try {
+      const m7 = MODS.M7({ canvas: { width: 1200, height: 700 }, width: 1200, height: 700 });
+      ok('M7 返回 draw/resize/dispose', !!(m7 && m7.draw && m7.resize && m7.dispose));
+      const sizes = [[1280, 720], [390, 720], [320, 900]];
+      for (const [w, h] of sizes) {
+        for (let stage = 0; stage <= 3; stage++) {
+          for (const t of [0, 0.5, 1]) {
+            try { m7.draw(fakeCtx(w, h), w, h, { t, cycStage: stage, playing: true, show: {} }); }
+            catch (e) { errs.push(w + 'x' + h + ' s' + stage + ': ' + e.message); }
+          }
+        }
+      }
+    } catch (e) { errs.push('create: ' + e.message); }
+    ok('M7 4 阶段 × 3 尺寸 × 3 时间点绘制无异常', errs.length === 0, errs.slice(0, 3).join(' ; '));
+  }
 }
 
 /* ---------- 4. 题库 ---------- */

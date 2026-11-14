@@ -57,6 +57,7 @@
     searchResults: $('#searchResults'), liveNow: $('#liveNow'), liveJudge: $('#liveJudge'),
     liveTitle: $('#liveTitle'), liveSource: $('#liveSource'), liveTime: $('#liveTime'),
     liveChart: $('#liveChart'), liveChartNote: $('#liveChartNote'),
+    cycBar: $('#cycBar'), marks: document.querySelectorAll ? document.querySelector('.marks') : null,
     modalQuiz: $('#modalQuiz'), quizBody: $('#quizBody'), quizProgress: $('#quizProgress'),
     quizScore: $('#quizScore'), quizNext: $('#quizNext'),
     modalPrompt: $('#modalPrompt'), promptBody: $('#promptBody'), promptHint: $('#promptHint'),
@@ -66,7 +67,7 @@
   /* ---------------- 画布 ---------------- */
   var c2d = el.c2d.getContext('2d');
   var W = 0, H2 = 0, DPR = Math.min(global.devicePixelRatio || 1, 2);
-  var glReady = false, m1 = null, m2 = null, m3 = null, m4 = null;
+  var glReady = false, m1 = null, m2 = null, m3 = null, m4 = null, m7 = null;
   var frameError = 0, lastFrameErrorToast = 0;
 
   function sizeOf() {
@@ -133,6 +134,7 @@
     if (model === 'M2' && !m2 && MODS.M2) m2 = MODS.M2(ctx);
     if (model === 'M3' && !m3 && MODS.M3) m3 = MODS.M3(ctx);
     if (model === 'M4' && !m4 && MODS.M4) m4 = MODS.M4(ctx);
+    if (model === 'M7' && !m7 && MODS.M7) m7 = MODS.M7(ctx);
   }
 
   /* ---------------- 视图切换 ---------------- */
@@ -142,12 +144,19 @@
     state.model = model;
     el.main.dataset.model = model;
     el.tabs.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-model') === model); });
+    /* 手机顶栏标签多：把当前标签滚进可视区，否则用户看不到自己在哪一页 */
+    var activeTab = null;
+    el.tabs.forEach(function (b) { if (b.getAttribute('data-model') === model) activeTab = b; });
+    if (activeTab && activeTab.scrollIntoView) {
+      try { activeTab.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch (e) {}
+    }
 
     var is3D = model === 'M1';
-    var is2D = model === 'M2' || model === 'M3' || model === 'M4';
+    var is2D = model === 'M2' || model === 'M3' || model === 'M4' || model === 'M7';
 
     el.stage.hidden = !(is3D || is2D);
-    $('#panel').hidden = !(is3D || is2D);
+    /* 锋面气旋是“纯演示”视图：右侧面板收起，让画布占满主区 */
+    $('#panel').hidden = !(is3D || is2D) || model === 'M7';
     el.knowledge.hidden = model !== 'M5';
     el.live.hidden = model !== 'M6';
 
@@ -169,6 +178,22 @@
   /* 画布顶部的浮层：视角条 / 天气图条 / 阶段徽标，按视图显隐 */
   function syncChrome() {
     el.phaseBadge.hidden = state.model !== 'M1';
+    if (el.cycBar) {
+      el.cycBar.hidden = state.model !== 'M7';
+      Array.prototype.forEach.call(el.cycBar.querySelectorAll('[data-stage]'), function (b) {
+        b.classList.toggle('on', parseInt(b.getAttribute('data-stage'), 10) === cycStage());
+      });
+    }
+    if (el.marks) {
+      var mk = el.marks.querySelectorAll('span');
+      var labels = state.model === 'M7'
+        ? ['初生', '发展', '成熟', '消亡']
+        : ['过境前', '过境时', '过境后'];
+      Array.prototype.forEach.call(mk, function (s2, i) {
+        if (labels[i]) { s2.textContent = labels[i]; s2.hidden = false; }
+        else { s2.hidden = true; }
+      });
+    }
     el.mapBar.hidden = state.model !== 'M3';
     el.monthWrap.hidden = !(state.model === 'M3' && state.mapMode === 'rainbelt');
     /* 「天气图」模式条与月份滑条要跟 state 同步（含 URL 参数进入时） */
@@ -241,6 +266,7 @@
   }
 
   function updateReadout() {
+    if (state.model === 'M7') return;
     var cur = F.curve(state.type, state.t);
     var meta = F.meta[state.type];
     el.mTemp.textContent = cur.temp.toFixed(1) + ' ℃';
@@ -291,12 +317,12 @@
     try {
       if (state.model === 'M1' && glReady && m1) {
         m1.frame(state, dt);
-      } else if (state.model === 'M2' || state.model === 'M3' || state.model === 'M4') {
-        var model = state.model === 'M2' ? m2 : state.model === 'M3' ? m3 : m4;
+      } else if (state.model === 'M2' || state.model === 'M3' || state.model === 'M4' || state.model === 'M7') {
+        var model = state.model === 'M2' ? m2 : state.model === 'M3' ? m3 : state.model === 'M4' ? m4 : m7;
         if (model) {
           c2d.setTransform(DPR, 0, 0, DPR, 0, 0);
           c2d.clearRect(0, 0, W, H2);
-          model.draw(c2d, W, H2, state, F);
+          model.draw(c2d, W, H2, state.model === 'M7' ? m7State(now) : state, F);
         }
       }
     } catch (e) {
@@ -312,6 +338,19 @@
     if (!readoutAt || now - readoutAt > 90) { readoutAt = now; updateReadout(); }
   }
   var readoutAt = 0;
+
+  /* ---------------- 锋面气旋阶段 ---------------- */
+  function cycStage() {
+    return Math.max(0, Math.min(3, Math.floor(Math.min(0.9999, state.t) * 4)));
+  }
+  function m7State(now) {
+    var g = Math.min(0.9999, Math.max(0, state.t));
+    var st = Math.floor(g * 4);
+    return {
+      t: g * 4 - st, cycStage: st, playing: state.playing,
+      show: state.show, anim: now / 1000
+    };
+  }
 
   /* ---------------- URL 同步 ---------------- */
   function syncURL() {
@@ -331,7 +370,7 @@
     });
     if (F.types.indexOf(q.type) >= 0) state.type = q.type;
     if (q.t !== undefined && isFinite(parseFloat(q.t))) state.t = Math.max(0, Math.min(1, parseFloat(q.t)));
-    if (q.m && /^M[1-6]$/.test(q.m)) state.model = q.m;
+    if (q.m && /^M[1-7]$/.test(q.m)) state.model = q.m;
     if (q.map && ['cyclone', 'rainbelt', 'symbols', 'world'].indexOf(q.map) >= 0) state.mapMode = q.map;
     if (q.month) state.month = Math.max(4, Math.min(9, parseInt(q.month, 10) || 6));
     if (q.view && ['iso', 'profile', 'top', 'cold', 'warm'].indexOf(q.view) >= 0) state.view = q.view;
@@ -783,6 +822,20 @@
         syncURL();
       });
     });
+
+    if (el.cycBar) {
+      el.cycBar.querySelectorAll('[data-stage]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var st = parseInt(b.getAttribute('data-stage'), 10) || 0;
+          state.t = Math.min(0.995, (st + 0.06) / 4);
+          state.playing = true;
+          syncSlider();
+          updatePlayBtn();
+          syncChrome();
+          syncURL();
+        });
+      });
+    }
 
     el.monthSlider.addEventListener('input', function () {
       state.month = parseInt(el.monthSlider.value, 10);

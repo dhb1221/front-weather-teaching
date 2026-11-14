@@ -70,6 +70,55 @@
       .replace(/(特别行政区|自治区|自治州|地区|林区|省|市|盟|县|区)$/g, '');
   }
 
+  /* 省级行政区 → 省会/首府（直辖市、港澳、台湾各自对应），用于“直接搜省名”的场景 */
+  var PROV_CAP = {
+    '北京': '北京', '天津': '天津', '上海': '上海', '重庆': '重庆',
+    '河北': '石家庄', '山西': '太原', '内蒙古': '呼和浩特', '辽宁': '沈阳', '吉林': '长春',
+    '黑龙江': '哈尔滨', '江苏': '南京', '浙江': '杭州', '安徽': '合肥', '福建': '福州',
+    '江西': '南昌', '山东': '济南', '河南': '郑州', '湖北': '武汉', '湖南': '长沙',
+    '广东': '广州', '广西': '南宁', '海南': '海口', '四川': '成都', '贵州': '贵阳',
+    '云南': '昆明', '西藏': '拉萨', '陕西': '西安', '甘肃': '兰州', '青海': '西宁',
+    '宁夏': '银川', '新疆': '乌鲁木齐', '台湾': '台北', '香港': '香港', '澳门': '澳门'
+  };
+
+  /* 查询是省名/简称时，返回省会城市（并注明省份），避免在线接口把省名当普通村庄 */
+  function provinceHit(q) {
+    var nq = norm(q);
+    if (!nq || !global.GEO_CITIES) return [];
+    var cap = null, provName = null;
+    for (var key in PROV_CAP) {
+      if (PROV_CAP.hasOwnProperty(key) && (nq === key || nq === key + '省' || nq === key + '市')) {
+        cap = PROV_CAP[key];
+        provName = key;
+        break;
+      }
+    }
+    /* 自治区全称（如“广西壮族自治区”“新疆维吾尔自治区”）也能识别 */
+    if (!cap) {
+      var FULL = ['广西壮族自治区', '宁夏回族自治区', '新疆维吾尔自治区', '西藏自治区',
+        '内蒙古自治区', '香港特别行政区', '澳门特别行政区'];
+      for (var i = 0; i < FULL.length; i++) {
+        if (q.indexOf(FULL[i]) === 0 || norm(q) === norm(FULL[i])) {
+          var short = FULL[i].replace(/(壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区)/g, '');
+          if (PROV_CAP[short]) { cap = PROV_CAP[short]; provName = short; }
+          break;
+        }
+      }
+    }
+    if (!cap) return [];
+    var list = global.GEO_CITIES;
+    for (var j = 0; j < list.length; j++) {
+      if (list[j].s === cap) {
+        return [{
+          name: list[j].s, prov: list[j].ps, provFull: list[j].p,
+          country: '中国', lon: list[j].lon, lat: list[j].lat,
+          local: true, viaProvince: provName
+        }];
+      }
+    }
+    return [];
+  }
+
   function localSearch(q) {
     var list = global.GEO_CITIES;
     if (!list || !list.length) return [];
@@ -109,6 +158,8 @@
     if (!q) return Promise.resolve([]);
     var local = localSearch(q);
     if (local.length) return Promise.resolve(local);
+    var prov = provinceHit(q);
+    if (prov.length) return Promise.resolve(prov);
     var url = 'https://geocoding-api.open-meteo.com/v1/search?name=' +
       encodeURIComponent(q) + '&count=20&language=zh&format=json';
     return fetchJSON(url).then(function (d) {

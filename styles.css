@@ -801,3 +801,14 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
   color: var(--text); font-size: 12.5px;
 }
 .demo-row .chip:hover { border-color: rgba(78, 161, 255, 0.6); background: rgba(30, 52, 90, 0.8); }
+
+/* ================= ⑦ 锋面气旋演示：画布占满主区 ================= */
+#main[data-model="M7"] { grid-template-columns: minmax(0, 1fr); }
+#main[data-model="M7"] #stage { grid-column: 1 / -1; }
+#main[data-model="M7"] #viewArea { height: calc(100vh - 190px); min-height: 380px; }
+@media (max-width: 900px) {
+  #main[data-model="M7"] #viewArea { height: calc(100vh - 210px); min-height: 340px; }
+}
+#cycBar { align-items: center; }
+#cycBar > button { min-width: 62px; }
+.marks span:nth-child(4) { text-align: right; }
