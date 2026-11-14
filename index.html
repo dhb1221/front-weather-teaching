@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>锋与天气 · 高中地理交互教具</title>
+<meta name="description" content="高中地理「常见天气系统——锋与天气」交互式教具：冷锋、暖锋、准静止锋三维演示、剖面图解、天气图、要素曲线、知识库与联网实况判读。" />
+<meta name="theme-color" content="#05070f" />
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.92em' font-size='86'%3E%E2%9B%85%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 顶栏 ============ -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🌦</span>
+      <div class="brand-text">
+        <h1>锋与天气</h1>
+        <p>高中地理 · 常见天气系统交互实验室</p>
+      </div>
+    </div>
+    <nav id="tabs" aria-label="视图切换">
+      <button class="tab on" data-model="M1">① 立体空间</button>
+      <button class="tab" data-model="M2">② 剖面图解</button>
+      <button class="tab" data-model="M3">③ 天气图</button>
+      <button class="tab" data-model="M4">④ 要素曲线</button>
+      <button class="tab" data-model="M5">⑤ 知识库</button>
+      <button class="tab" data-model="M6">⑥ 实况天气</button>
+    </nav>
+    <div class="top-actions">
+      <button id="btnPrompt" class="ghost" title="查看完美提示词">提示词</button>
+      <button id="btnQuiz" class="primary" title="课堂练习">练习</button>
+    </div>
+  </header>
+
+  <!-- ============ 主区 ============ -->
+  <main id="main">
+
+    <!-- 画布区 -->
+    <section id="stage">
+      <div id="viewArea">
+        <canvas id="gl"></canvas>
+        <canvas id="c2d"></canvas>
+
+        <div id="overlayTop">
+          <div id="viewPresets" class="chips" aria-label="观察视角">
+            <span class="chips-label">视角</span>
+            <button data-view="iso" class="on">斜视</button>
+            <button data-view="profile">正剖面</button>
+            <button data-view="top">俯视</button>
+            <button data-view="cold">冷气团侧</button>
+            <button data-view="warm">暖气团侧</button>
+          </div>
+          <div id="mapBar" class="chips" hidden aria-label="天气图模式">
+            <button data-map="cyclone" class="on">锋面气旋</button>
+            <button data-map="rainbelt">我国雨带</button>
+            <button data-map="symbols">符号判读</button>
+            <span class="month-wrap" id="monthWrap" hidden>
+              <b id="monthLabel">6 月</b>
+              <input type="range" id="monthSlider" min="4" max="9" step="1" value="6" aria-label="月份" />
+            </span>
+          </div>
+        </div>
+
+        <div id="phaseBadge" class="phase-badge">过境前</div>
+        <div id="toast" role="status" aria-live="polite"></div>
+        <div id="loading"><span class="spinner"></span>正在构建三维场景…</div>
+        <div id="fallback" hidden>
+          <h3>三维渲染不可用</h3>
+          <p>当前浏览器未启用 WebGL，已自动切换到「剖面图解」视图，动画与讲解不受影响。</p>
+        </div>
+      </div>
+
+      <!-- 时间轴 -->
+      <div id="ctrlbar">
+        <button id="btnPlay" class="round" title="播放 / 暂停（空格）" aria-label="播放或暂停">▶</button>
+        <div class="timeline">
+          <input type="range" id="tSlider" min="0" max="1000" value="220" aria-label="时间轴" />
+          <div class="marks"><span>过境前</span><span>过境时</span><span>过境后</span></div>
+        </div>
+        <div class="speeds" role="group" aria-label="播放速度">
+          <button data-speed="0.5">0.5×</button>
+          <button data-speed="1" class="on">1×</button>
+          <button data-speed="2">2×</button>
+        </div>
+        <button id="btnReset" class="round" title="回到开始（R）" aria-label="重置">↺</button>
+      </div>
+    </section>
+
+    <!-- 右侧控制面板 -->
+    <aside id="panel">
+      <div class="card" id="typeCard">
+        <h3>选择锋面类型</h3>
+        <div class="types" id="typeBtns"></div>
+      </div>
+
+      <div class="card" id="readoutCard">
+        <h3>实时读数 <span id="phasePill" class="pill">过境前</span></h3>
+        <div class="metrics">
+          <div class="metric"><span class="k">气温</span><b id="mTemp">—</b></div>
+          <div class="metric"><span class="k">气压</span><b id="mPress">—</b></div>
+          <div class="metric"><span class="k">降水</span><b id="mRain">—</b></div>
+          <div class="metric"><span class="k">云量</span><b id="mCloud">—</b></div>
+        </div>
+        <p class="weather" id="mWeather">—</p>
+        <p class="wind" id="mWind">—</p>
+        <p class="desc" id="mDesc">—</p>
+        <p class="slope-line" id="mSlope">—</p>
+      </div>
+
+      <div class="card" id="viewCard">
+        <h3>显示要素</h3>
+        <div class="toggles" id="toggles">
+          <label><input type="checkbox" data-show="slope" checked /><span>锋面坡度</span></label>
+          <label><input type="checkbox" data-show="air" checked /><span>气团与气流</span></label>
+          <label><input type="checkbox" data-show="clouds" checked /><span>云系</span></label>
+          <label><input type="checkbox" data-show="rain" checked /><span>降水</span></label>
+          <label><input type="checkbox" data-show="labels" checked /><span>标注</span></label>
+          <label><input type="checkbox" data-show="grid" checked /><span>地面网格</span></label>
+        </div>
+      </div>
+
+      <div class="card" id="legendCard">
+        <h3>图例</h3>
+        <ul class="legend" id="legendList"></ul>
+        <p class="tip">拖动画面可旋转，双指 / 滚轮缩放；手机横置效果更佳。</p>
+      </div>
+    </aside>
+
+    <!-- 知识库 -->
+    <section id="knowledge" hidden>
+      <aside class="kn-nav">
+        <div class="kn-search"><input id="knSearch" type="search" placeholder="搜索知识点…" /></div>
+        <div id="knList"></div>
+      </aside>
+      <div class="kn-body" id="knBody"></div>
+    </section>
+
+    <!-- 实况天气 -->
+    <section id="live" hidden>
+      <div class="live-head">
+        <h2>实况天气 · 锋面判读</h2>
+        <p class="live-sub">联网获取你所在城市或任意城市的当前天气，按冷锋 / 暖锋 / 准静止锋的判据自动判读，并可一键回到课堂演示。</p>
+        <div class="live-search">
+          <input id="cityInput" type="search" placeholder="输入城市名，如 贵阳、北京、昆明…" autocomplete="off" />
+          <button id="btnSearch" class="primary">搜索</button>
+          <button id="btnLocate" class="ghost">定位</button>
+          <button id="btnRefresh" class="ghost" title="重新获取">刷新</button>
+        </div>
+        <div class="chips" id="cityPresets"></div>
+        <div id="searchResults" class="search-results" hidden></div>
+      </div>
+
+      <div class="live-grid">
+        <div class="card">
+          <h3 id="liveTitle">当前实况 <span id="liveSource" class="pill">—</span></h3>
+          <div id="liveNow" class="live-metrics"></div>
+          <p id="liveTime" class="live-time"></p>
+        </div>
+        <div class="card">
+          <h3>今日气温 / 气压 / 降水变化</h3>
+          <canvas id="liveChart"></canvas>
+          <p class="live-chart-note" id="liveChartNote"></p>
+        </div>
+        <div class="card">
+          <h3>锋面判读</h3>
+          <div id="liveJudge" class="live-judge"></div>
+        </div>
+      </div>
+
+      <div class="card live-note">
+        <h3>数据来源与判读说明</h3>
+        <p>实况数据来自公开气象服务：<b>wttr.in</b>（主）与 <b>MET Norway</b>（备），城市坐标与海拔来自 <b>Open-Meteo 地理编码</b>。页面不会伪造数据：任一数据源失败会降级或明确提示，可手动输入观测值。</p>
+        <p>教材判据使用「24 小时气温 / 气压变化」，但公开免费数据源通常取不到昨日同刻的实测值，本页因此用<b>今日已过时段的变化</b>近似，并在结论中标注实际时段长度，不冒充 24 小时。</p>
+        <p class="dim">判据参考：冷锋 ΔT≤−4℃ 且 ΔP≥+3hPa（偏南风转偏北风、阵性降水）；暖锋 ΔT≥+3℃ 且 ΔP≤−3hPa（连续性降水）；准静止锋 |ΔT|&lt;2.5℃、|ΔP|&lt;2hPa 且降水持续时间长。</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ 练习弹层 ============ -->
+  <div class="modal" id="modalQuiz" hidden>
+    <div class="sheet">
+      <header>
+        <h3>课堂练习</h3>
+        <span id="quizProgress" class="dim"></span>
+        <button id="quizClose" class="round" aria-label="关闭">✕</button>
+      </header>
+      <div id="quizBody" class="quiz-body"></div>
+      <footer>
+        <button id="quizRestart" class="ghost">重新抽题</button>
+        <span id="quizScore" class="dim"></span>
+        <button id="quizNext" class="primary">下一题 →</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ 提示词弹层 ============ -->
+  <div class="modal" id="modalPrompt" hidden>
+    <div class="sheet">
+      <header>
+        <h3>「锋与天气」完美提示词</h3>
+        <button id="promptClose" class="round" aria-label="关闭">✕</button>
+      </header>
+      <div class="prompt-body" id="promptBody"></div>
+      <footer>
+        <button id="promptCopy" class="primary">复制全文</button>
+        <span id="promptHint" class="dim"></span>
+      </footer>
+    </div>
+  </div>
+
+  <footer id="foot">
+    <span>锋与天气 · 交互式教具</span>
+    <span class="dim">离线可用 · 手机适配 · 数据与图注均可溯源</span>
+  </footer>
+</div>
+
+<!-- 提示词全文（构建时由 build.mjs 注入） -->
+<script id="promptData">window.PROMPT = "";</script>
+
+<script src="vendor/three.min.js"></script>
+<script src="src/front-data.js"></script>
+<script src="src/helpers.js"></script>
+<script src="src/geo-china.js"></script>
+<script src="src/geo-world.js"></script>
+<script src="src/geo.js"></script>
+<script src="src/knowledge.js"></script>
+<script src="src/m2-section.js"></script>
+<script src="src/m3-map.js"></script>
+<script src="src/m4-chart.js"></script>
+<script src="src/quiz.js"></script>
+<script src="src/scene3d.js"></script>
+<script src="src/live.js"></script>
+<script src="src/app.js"></script>
+</body>
+</html>
