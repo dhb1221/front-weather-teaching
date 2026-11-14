@@ -5878,9 +5878,9 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     var rainDrops = [];
     for (var r = 0; r < RAIN_N; r++) {
       rainDrops.push({
-        x: (Math.random() * 2 - 1) * 14, y: Math.random() * 6,
+        x: (Math.random() * 2 - 1) * 14, y: Math.random() * 3.4,
         z: -Z + Math.random() * 2 * Z,
-        len: 0.45 + Math.random() * 0.65,
+        len: 0.4 + Math.random() * 0.55,
         sp: 13 + Math.random() * 9,
         k: 0.55 + Math.random() * 0.45
       });
@@ -6153,7 +6153,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         rainPts.visible = !!st.show.rain && rain > 0.02 && !isSnow;
         snowPts.visible = !!st.show.rain && rain > 0.02 && isSnow;
         mistPts.visible = !!st.show.rain && rain > 0.05 && !isSnow;
-        rainMat.opacity = Math.min(0.85, 0.2 + rain * 0.8);
+        rainMat.opacity = Math.min(0.9, 0.26 + rain * 0.66);
         cloudShadow.visible = !!st.show.clouds;
         cloudShadow.position.x = (rL + rR) / 2;
         cloudShadow.scale.set(bandW * 0.62 + 1.2, (bandW * 0.62 + 1.2) * 0.8, 1);
@@ -6165,7 +6165,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
             var rs = rainDrops[q];
             rs.y -= rs.sp * dt;
             if (rs.y < 0.05) {
-              rs.y = 6.2 + Math.random() * 1.4;
+              /* 云底（约 2.3~2.6）以下开始下雨，避免雨丝出现在云顶之上 */
+              rs.y = 2.4 + Math.random() * 1.3;
               rs.x = rL + Math.random() * bandW;
             }
             var len = rs.len;
