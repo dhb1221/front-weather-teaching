@@ -802,6 +802,15 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
   .manual { grid-template-columns: 1fr; }
 }
 
+/* 实况判读：无锋面时的三种演示入口 */
+.demo-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.demo-row .chip {
+  padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(140, 175, 235, 0.28); background: rgba(20, 32, 56, 0.7);
+  color: var(--text); font-size: 12.5px;
+}
+.demo-row .chip:hover { border-color: rgba(78, 161, 255, 0.6); background: rgba(30, 52, 90, 0.8); }
+
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.92em' font-size='86'%3E%E2%9B%85%3C/text%3E%3C/svg%3E" />
 </head>
@@ -1287,6 +1296,24 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     return sp;
   }
 
+  /* 就地改写一个文字精灵：重绘贴图、复用它自己的材质，避免每帧新建贴图 */
+  function setLabelText(sprite, text, opts) {
+    if (!sprite || !sprite.material) return sprite;
+    opts = opts || {};
+    var fresh = makeLabel(text, opts);
+    var oldMap = sprite.material.map;
+    sprite.material.map = fresh.material.map;
+    sprite.material.transparent = true;
+    sprite.material.needsUpdate = true;
+    if (oldMap && oldMap.dispose) oldMap.dispose();
+    sprite.userData.baseScale = fresh.userData.baseScale;
+    sprite.userData.aspect = fresh.userData.aspect;
+    sprite.scale.set(fresh.scale.x, fresh.scale.y, 1);
+    /* 断开临时精灵对贴图的引用，防止它被回收时连带 dispose 已交接的贴图 */
+    fresh.material.map = null;
+    return sprite;
+  }
+
   function makeLine(points, color, opts) {
     opts = opts || {};
     var geo = new THREE.BufferGeometry().setFromPoints(points);
@@ -1579,6 +1606,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     PALETTE: PALETTE,
     roundRect: roundRect,
     makeLabel: makeLabel,
+    setLabelText: setLabelText,
     makeLine: makeLine,
     makeCircleLine: makeCircleLine,
     makeSoftTexture: makeSoftTexture,
@@ -1687,10 +1715,18 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     };
   }
 
+  /* 兰勃特投影的 y 轴朝北（数学坐标），画布 y 朝下，需先取反再交给 makeProjector */
+  function lccNorthUp(phi1, phi2, lam0) {
+    var f = lcc(phi1, phi2, lam0);
+    return function (lon, lat) {
+      var p = f(lon, lat);
+      return { x: p.x, y: -p.y };
+    };
+  }
+
   /* 中国主图：经度 73~135，纬度 17~54（南海诸岛另作插图） */
   function chinaProjector(w, h, pad) {
-    var fwd = lcc(25, 47, 105);
-    return makeProjector(fwd, 73, 135, 17, 54, w, h, pad === undefined ? 10 : pad);
+    return makeProjector(lccNorthUp(25, 47, 105), 73, 135, 17, 54, w, h, pad === undefined ? 10 : pad);
   }
 
   /* 区域图（天气图底图）：等经纬，按中纬度压缩经度 */
@@ -1771,7 +1807,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     c2d.strokeStyle = 'rgba(150,180,230,0.4)';
     c2d.lineWidth = 0.8;
     c2d.strokeRect(ix, iy, iw, ih);
-    var inset = makeProjector(lcc(25, 47, 105), 106, 123, 2, 24, iw, ih, 4);
+    var inset = makeProjector(lccNorthUp(25, 47, 105), 106, 123, 2, 24, iw, ih, 4);
     c2d.translate(ix, iy);
     c2d.fillStyle = opts.land || '#0e1a2c';
     c2d.strokeStyle = opts.border || 'rgba(120,160,220,0.28)';
@@ -1865,6 +1901,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     CITIES: CITIES,
     lcc: lcc,
     makeProjector: makeProjector,
+    lccNorthUp: lccNorthUp,
     chinaProjector: chinaProjector,
     regionProjector: regionProjector,
     pathRings: pathRings,
@@ -3443,18 +3480,20 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       w / 2, h / 2, 'rgba(255,180,120,0.92)', 12 * sc, 'center', true);
   }
 
-  /* 底图参数：rainbelt 用真实中国图，cyclone 用东亚区域世界图 */
+  /* 底图参数：rainbelt 用真实中国图，cyclone 用东亚区域世界图
+     注意配色：陆地比海洋亮一档（#12233c vs #070d18），省界/海岸线提亮，
+     否则整张图对比度太低、看不清轮廓。 */
   function geoSpec(mode, month) {
     if (mode === 'rainbelt') {
       return {
         opts: {
-          ocean: '#070d18',
-          land: '#0e1a2c',
-          border: 'rgba(120,160,220,0.20)',
-          borderWidth: 0.7,
+          ocean: '#081120',
+          land: '#17304f',
+          border: 'rgba(160,196,246,0.45)',
+          borderWidth: 0.9,
           cities: false,
           highlight: RAIN_HIGHLIGHT[month] || [],
-          highlightFill: 'rgba(78,161,255,0.16)',
+          highlightFill: 'rgba(78,161,255,0.22)',
           insetPad: 8
         }
       };
@@ -3462,10 +3501,119 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     return {
       opts: {
         lonMin: 100, lonMax: 140, latMin: 18, latMax: 50,
-        ocean: '#070d18', land: '#0e1a2c',
-        border: 'rgba(120,160,220,0.18)', borderWidth: 0.6
+        ocean: '#081120', land: '#17304f',
+        border: 'rgba(160,196,246,0.42)', borderWidth: 0.85
       }
     };
+  }
+
+  /* GEO 的 LCC 投影 y 轴朝北（数值随纬度增大），而 canvas 的 y 轴向下；
+     GEO.drawChina 直接用它绘制会“南海诸岛在上、黑龙江在下”，南北颠倒。
+     这里把投影的 y 翻转，得到“北在上、南在下”的正确朝向（不改 geo.js）。 */
+  function northUpProj(proj, ph) {
+    /* GEO.chinaProjector 现已修正为“北在上”；若检测到投影本身已经北在上，
+       则直接复用，避免二次翻转又把地图倒过来。 */
+    try {
+      var south = proj.project(105, 20), north = proj.project(105, 45);
+      if (north.y < south.y) return proj;
+    } catch (e) { /* 投影异常时按旧逻辑翻转 */ }
+    return {
+      project: function (lon, lat) {
+        var p = proj.project(lon, lat);
+        return { x: p.x, y: ph - p.y };
+      }
+    };
+  }
+
+  /* 北在上的真实中国底图：海岸线 / 省界 / 省份高亮 / 南海诸岛插图。
+     数据与投影都取自 GEO / GEO_CHINA，仅把 y 轴翻正；配色沿用 geoSpec。
+     返回北向上的投影，供雨带/城市等动态层统一使用。 */
+  function paintChinaBase(g, pw, ph, month) {
+    var G = global.GEO, CH = global.GEO_CHINA;
+    var opts = geoSpec('rainbelt', month).opts;
+    var proj = northUpProj(G.chinaProjector(pw, ph, 10), ph);
+    var pv, i, j, q, ring;
+
+    g.save();
+    g.lineJoin = 'round';
+    if (opts.ocean) { g.fillStyle = opts.ocean; g.fillRect(0, 0, pw, ph); }
+
+    /* 省级陆地 + 省界 */
+    g.fillStyle = opts.land;
+    g.strokeStyle = opts.border;
+    g.lineWidth = opts.borderWidth;
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, proj.project);
+      g.fill();
+    }
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, proj.project);
+      g.stroke();
+    }
+
+    /* 高亮当月雨带覆盖的省份 */
+    if (opts.highlight && opts.highlight.length) {
+      g.fillStyle = opts.highlightFill;
+      for (i = 0; i < CH.provinces.length; i++) {
+        pv = CH.provinces[i];
+        if (opts.highlight.some(function (n) { return pv.name.indexOf(n) >= 0; })) {
+          G.pathRings(g, pv.rings, proj.project);
+          g.fill();
+        }
+      }
+    }
+
+    /* 南海诸岛插图（右下角，含九段线；插图同样北在上） */
+    var iw = Math.max(48, Math.min(pw * 0.2, 96));
+    var ih = iw * 1.35;
+    var ipd = opts.insetPad === undefined ? 12 : opts.insetPad;
+    var ix = pw - iw - ipd, iy = ph - ih - ipd;
+    var inProj = northUpProj(
+      G.makeProjector(G.lcc(25, 47, 105), 106, 123, 2, 24, iw, ih, 4), ih);
+    g.save();
+    g.fillStyle = 'rgba(7,13,24,0.82)';
+    g.fillRect(ix, iy, iw, ih);
+    g.strokeStyle = 'rgba(150,180,230,0.45)';
+    g.lineWidth = 1;
+    g.strokeRect(ix, iy, iw, ih);
+    g.translate(ix, iy);
+    /* 插图必须裁剪到小框内：否则超出经度 106—123°E / 纬度 2—24°N 的省份
+       （新疆、内蒙古等）会“溢出”到主图上，形成一块多余的小中国轮廓 */
+    g.beginPath();
+    g.rect(0, 0, iw, ih);
+    g.clip();
+    g.fillStyle = opts.land;
+    g.strokeStyle = opts.border;
+    g.lineWidth = 0.5;
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, inProj.project);
+      g.fill();
+      g.stroke();
+    }
+    if (CH.jd && CH.jd.rings) {
+      g.strokeStyle = 'rgba(150,190,240,0.85)';
+      g.lineWidth = Math.max(0.8, iw / 60);
+      for (i = 0; i < CH.jd.rings.length; i++) {
+        ring = CH.jd.rings[i];
+        if (!ring || ring.length < 2) continue;
+        g.beginPath();
+        for (j = 0; j < ring.length; j++) {
+          q = inProj.project(ring[j][0], ring[j][1]);
+          if (j === 0) g.moveTo(q.x, q.y); else g.lineTo(q.x, q.y);
+        }
+        g.stroke();
+      }
+    }
+    g.restore();
+
+    /* 插图标签（正立文字） */
+    g.fillStyle = 'rgba(219,230,255,0.78)';
+    g.font = 'bold 9px ' + FONT;
+    g.textAlign = 'right';
+    g.textBaseline = 'alphabetic';
+    g.fillText('南海诸岛', ix + iw - 3, iy + ih - 3);
+    g.restore();
+    return proj;
   }
 
   /* 生成/复用底图缓存。返回 { cv, proj, inset, geoOK, landPath } */
@@ -3492,9 +3640,10 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     var bg = off.ctx;
     if (mode === 'rainbelt') {
       if (hasGeo) {
-        var out = global.GEO.drawChina(bg, pw, ph, geoSpec(mode, month).opts);
-        cache.proj = out.projector;
-        cache.inset = out.inset;
+        /* 注意：不用 GEO.drawChina 直接画（它的 LCC y 轴朝北会让地图南北颠倒），
+           改用同一套 GEO 数据 + 翻正 y 轴的自绘底图。 */
+        cache.proj = paintChinaBase(bg, pw, ph, month);
+        cache.inset = null;
         /* 陆地裁剪路径（省界多边形）预生成一次，雨带只画在陆地上 */
         if (typeof Path2D !== 'undefined') {
           try {
@@ -3528,7 +3677,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
   /* 无法离屏时（如测试桩），直接在当前上下文画底图 */
   function paintBaseDirect(g, mode, month, pw, ph) {
     if (mode === 'rainbelt' && global.GEO && global.GEO_CHINA) {
-      return global.GEO.drawChina(g, pw, ph, geoSpec(mode, month).opts);
+      return { projector: paintChinaBase(g, pw, ph, month), inset: null };
     }
     if (mode !== 'rainbelt' && global.GEO && global.GEO_WORLD) {
       return {
@@ -3737,9 +3886,10 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       g.lineWidth = k === 5 ? 1.6 : 1.1;
       g.stroke();
       if (labelsOn) {
-        var q2 = isoPoint(k, 2.42 + k * 0.14);   /* 左下方向标数值 */
+        /* 数值标签沿西南→西北的弧线错开，避免内圈数值挤在一起 */
+        var q2 = isoPoint(k, 2.05 + k * 0.30);
         haloText(g, String(996 + 4 * k), q2.x, q2.y,
-          'rgba(150,190,255,0.66)', 9.5 * sc, 'center', false);
+          'rgba(150,190,255,0.72)', 9.5 * sc, 'center', false);
       }
     }
 
@@ -3795,10 +3945,10 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 
     if (!labelsOn) { g.restore(); return; }
 
-    /* 低压中心 */
+    /* 低压中心：L 在上、说明文字移到 L 上方，避免与 B 站“过境时（冷锋）”重叠 */
     haloText(g, 'L', cx, cy - 5 * sc, '#ff8f86', 26 * sc, 'center', true);
-    haloText(g, '低压中心 996 hPa', cx, cy + 18 * sc,
-      'rgba(255,180,170,0.92)', 10 * sc, 'center', false);
+    haloText(g, '低压中心 996 hPa', cx, cy - 38 * sc,
+      'rgba(255,180,170,0.94)', 10 * sc, 'center', false);
 
     /* 锋面名称 */
     var iCold = pathInfo(coldPts), iWarm = pathInfo(warmPts);
@@ -3918,8 +4068,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 
   /* 雨带内的小雨滴（斜短线），强化“多雨”观感 */
   function rainDrops(g, proj, cfg, sc) {
-    g.strokeStyle = 'rgba(160,215,255,0.62)';
-    g.lineWidth = 1.3 * sc;
+    g.strokeStyle = 'rgba(185,228,255,0.80)';
+    g.lineWidth = 1.4 * sc;
     g.lineCap = 'round';
     var i, lon, lat, p;
     for (i = 0; i < 10; i++) {
@@ -3944,8 +4094,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     }
     g.save();
     g.setLineDash([7 * sc, 5 * sc]);
-    g.strokeStyle = 'rgba(255,158,203,0.92)';
-    g.lineWidth = 2.2 * sc;
+    g.strokeStyle = 'rgba(255,170,210,0.98)';
+    g.lineWidth = 2.4 * sc;
     g.lineCap = 'round';
     polyline(g, pts, false);
     g.restore();
@@ -3956,9 +4106,9 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     var se = cfg.se;
     var i, p;
     g.save();
-    g.setLineDash([6 * sc, 5 * sc]);
-    g.strokeStyle = 'rgba(255,210,120,0.62)';
-    g.lineWidth = 1.5 * sc;
+    g.setLineDash([7 * sc, 5 * sc]);
+    g.strokeStyle = 'rgba(255,216,132,0.94)';
+    g.lineWidth = 1.8 * sc;
     g.beginPath();
     for (i = 0; i <= 48; i++) {
       var a = i / 48 * TAU;
@@ -3970,7 +4120,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     g.restore();
     var lp = proj.project(se.lon + se.rx * 0.72, se.lat + se.ry * 0.98);
     haloText(g, '588 线（西太副高）', lp.x, lp.y - 4 * sc,
-      'rgba(255,210,120,0.85)', 9 * sc, 'center', false);
+      'rgba(255,216,132,0.96)', 10 * sc, 'center', false);
   }
 
   /* 城市：按月份选 4 个，落在雨带纬度内的金色高亮 */
@@ -3993,20 +4143,20 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       var p = proj.project(ct.lon, ct.lat);
       if (inBand) {
         g.beginPath();
-        g.arc(p.x, p.y, 5.4 * sc, 0, TAU);
-        g.fillStyle = 'rgba(255,211,107,0.16)';
+        g.arc(p.x, p.y, 6.2 * sc, 0, TAU);
+        g.fillStyle = 'rgba(255,211,107,0.24)';
         g.fill();
-        g.strokeStyle = 'rgba(255,211,107,0.62)';
-        g.lineWidth = 1.2 * sc;
+        g.strokeStyle = 'rgba(255,211,107,0.95)';
+        g.lineWidth = 1.4 * sc;
         g.stroke();
       }
       g.beginPath();
-      g.arc(p.x, p.y, 2.8 * sc, 0, TAU);
-      g.fillStyle = inBand ? '#ffd36b' : 'rgba(219,230,255,0.82)';
+      g.arc(p.x, p.y, 3.2 * sc, 0, TAU);
+      g.fillStyle = inBand ? '#ffd36b' : 'rgba(219,230,255,0.92)';
       g.fill();
       if (labelsOn) {
-        haloText(g, ct.n, p.x + 7 * sc, p.y - 6 * sc,
-          inBand ? '#ffd36b' : 'rgba(219,230,255,0.72)', 10 * sc, 'left', inBand);
+        haloText(g, ct.n, p.x + 8 * sc, p.y - 7 * sc,
+          inBand ? '#ffe08a' : 'rgba(219,230,255,0.82)', 10.5 * sc, 'left', inBand);
       }
     }
   }
@@ -4067,7 +4217,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       g.clip();
       clipped = true;
     }
-    fillHatchPoly(g, bandPts, 'rgba(143,200,255,0.24)', 'rgba(143,200,255,0.55)', 8 * sc, 1);
+    fillHatchPoly(g, bandPts, 'rgba(143,200,255,0.30)',
+      'rgba(170,220,255,0.78)', 8 * sc, 1.1);
     rainDrops(g, proj, cfg, sc);
     dashedFrontLine(g, proj, cfg, sc);
     if (clipped) g.restore();
@@ -4080,11 +4231,11 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 
     /* 雨带名称 */
     var lbl = proj.project((cfg.lonA + cfg.lonB) / 2 - (cfg.lonB - cfg.lonA) * 0.12, cfg.lb + 1.6);
-    haloText(g, cfg.name, lbl.x, lbl.y - 4 * sc, '#cfebff', 11 * sc, 'center', true);
+    haloText(g, cfg.name, lbl.x, lbl.y - 4 * sc, '#e8f4ff', 11.5 * sc, 'center', true);
 
-    /* 7—8 月：长江中下游受副高控制出现伏旱 */
+    /* 7—8 月：长江中下游受副高控制出现伏旱（标在城市以南，避免压住城市名） */
     if (cfg.dry && labelsOn) {
-      var dp = proj.project(118.5, 30.2);
+      var dp = proj.project(115.4, 27.2);
       haloText(g, '长江中下游 · 伏旱', dp.x, dp.y + 4 * sc,
         'rgba(255,200,140,0.95)', 10 * sc, 'center', true);
     }
@@ -4125,7 +4276,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     g.stroke();
 
     /* 符号行 */
-    var sy = box.y + Math.min(box.h * 0.42, (34 + 36) * sc);
+    var sy = box.y + 66 * sc;
     var x0 = box.x + padX, x1 = box.x + box.w - padX;
     if (x1 - x0 > 40) {
       var seg = [{ x: x0, y: sy }, { x: x1, y: sy }];
@@ -4138,12 +4289,12 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       else symbolsAlong(g, seg, type === 'cold' ? 'tri' : 'semi', size, size * 2.7, col, 1);
     }
 
-    /* 移动方向提示（准静止锋除外） */
+    /* 移动方向提示（准静止锋除外）：画在符号线上方，避免压住符号 */
     if (type !== 'stationary') {
-      var ax = box.x + box.w - padX - 16 * sc;
-      var ay = box.y + 56 * sc;
-      drawArrow(g, ax, ay + 15 * sc, ax, ay, col, 1.3 * sc, 4.5 * sc);
-      haloText(g, '移动方向', ax - 4 * sc, ay + 8 * sc, C.dim, 8.5 * sc, 'right', false);
+      var ax2 = x1 - 6 * sc;
+      var ay = sy - 19 * sc;
+      drawArrow(g, ax2 - 26 * sc, ay, ax2, ay, col, 1.3 * sc, 4.5 * sc);
+      haloText(g, '移动方向', ax2 - 30 * sc, ay + 3 * sc, C.dim, 8.5 * sc, 'right', false);
     }
 
     /* 要点行 */
@@ -4153,8 +4304,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       ['实例', m.example]
     ];
     var maxW = box.w - padX * 2;
-    var ry = sy + 21 * sc;
-    var rowH = 25 * sc;
+    var ry = sy + 24 * sc;
+    var rowH = 26 * sc;
     for (i = 0; i < rows.length; i++) {
       if (ry + 10 * sc > box.y + box.h - 8 * sc) break;
       haloText(g, rows[i][0], box.x + padX, ry, 'rgba(219,230,255,0.46)', 9.5 * sc, 'left', true);
@@ -4176,7 +4327,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     var cards = [], i;
     if (horiz) {
       var cw = (pw - 2 * gap) / 3;
-      var ch = Math.min(ph, 320 * sc);
+      var ch = Math.min(ph, 212 * sc);
       var y0 = P.y0 + (ph - ch) / 2;
       for (i = 0; i < 3; i++) cards.push({ x: P.x0 + i * (cw + gap), y: y0, w: cw, h: ch });
     } else {
@@ -4219,9 +4370,11 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       c2d.lineJoin = 'round';
       c2d.setLineDash([]);
 
-      /* 标题（左上） */
-      haloText(c2d, info.title, 15 * sc, 22 * sc, C.text, 15 * sc, 'left', true);
-      haloText(c2d, info.sub, w - 15 * sc, 22 * sc, C.dim, 10.5 * sc, 'right', false);
+      /* 标题下移：页面顶部有浮层按钮（模式切换/月份滑条/阶段徽标），
+         y < 58px 内除背景外不画任何文字；标题放 y≈64–96 左侧，右侧留空。 */
+      haloText(c2d, info.title, 16 * sc, 82 * sc, C.text, 15 * sc, 'left', true);
+      haloText(c2d, info.sub, 17 * sc, 99 * sc,
+        'rgba(219,230,255,0.52)', 10.5 * sc, 'left', false);
 
       /* 先算底部图例/说明所占高度，再定绘图区 */
       var maxLegendW = w - 64 * sc;
@@ -4237,9 +4390,10 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       var P = {
         x0: 14 * sc,
         x1: w - 14 * sc,
-        y0: 44 * sc,
+        y0: Math.min(118 * sc, Math.max(78 * sc, h * 0.17)),
         y1: h - bh - 14 * sc
       };
+      if (P.y1 - P.y0 < 40 * sc) P.y0 = Math.max(20 * sc, P.y1 - 40 * sc);
 
       /* 绘图区裁剪，内容不侵入底部面板 */
       c2d.save();
@@ -5492,39 +5646,61 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
   function cloudField(kind) {
     var tex = global.H.makeSoftTexture('cloud');
     var g = new THREE.Group();
-    var n = kind === 'cumulo' ? 16 : 34;
-    for (var i = 0; i < n; i++) {
-      var mat = new THREE.SpriteMaterial({
-        map: tex, transparent: true, depthWrite: false,
-        opacity: kind === 'cumulo' ? 0.5 : 0.34
-      });
-      var sp = new THREE.Sprite(mat);
-      if (kind === 'cumulo') {
-        var u = i / (n - 1);
-        var ang = Math.random() * Math.PI * 2;
-        var r = 1.9 * (1 - u * 0.55);
-        sp.position.set(
-          Math.cos(ang) * r * 0.7,
-          2.4 + u * 4.6 + Math.random() * 0.6,
-          Math.sin(ang) * r
-        );
-        var s = 2.2 + (1 - u) * 2.6 + Math.random();
-        sp.scale.set(s, s * 0.85, 1);
-        sp.userData.puff = { u: u, ox: sp.position.x, oy: sp.position.y, oz: sp.position.z, s: s };
-      } else {
-        var row = i % 2;
-        sp.position.set(
-          0.6 + Math.random() * 9.5,
-          3.1 + row * 0.9 + Math.random() * 0.5,
-          -Z + 0.5 + Math.random() * (2 * Z - 1)
-        );
-        var sw = 3.2 + Math.random() * 2.6;
-        sp.scale.set(sw, sw * 0.42, 1);
+    var i, mat, sp, u, s, r, ang;
+    if (kind === 'cumulo') {
+      /* 积雨云：底部扁平云盘 + 高耸云柱 + 顶部云砧（向 +x 铺展） */
+      var baseN = 9, colN = 11, anvilN = 7;
+      for (i = 0; i < baseN; i++) {
+        u = i / (baseN - 1);
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.5, color: 0x74879e });
+        sp = new THREE.Sprite(mat);
+        ang = u * Math.PI * 2;
+        r = 2.5 + Math.cos(u * 3.1) * 0.5;
+        sp.position.set(Math.cos(ang) * r * 0.8, 2.15 + Math.sin(u * 2) * 0.16, Math.sin(ang) * r * 1.15);
+        s = 2.5 + Math.random() * 0.8;
+        sp.userData.puff = { kind: 'base', sx: s * 1.3, sy: s * 0.6, y0: sp.position.y, u: 0 };
+        g.add(sp);
+      }
+      for (i = 0; i < colN; i++) {
+        u = i / (colN - 1);
+        mat = new THREE.SpriteMaterial({
+          map: tex, transparent: true, depthWrite: false, opacity: 0.62,
+          color: u > 0.72 ? 0xffffff : 0xc6d6e9
+        });
+        sp = new THREE.Sprite(mat);
+        r = 1.5 * (1 - u * 0.55);
+        ang = i * 2.4;
+        sp.position.set(Math.cos(ang) * r * 0.85, 2.35 + u * 4.3, Math.sin(ang) * r);
+        s = 3.0 - u * 1.0 + Math.random() * 0.5;
+        sp.userData.puff = { kind: 'col', sx: s, sy: s * 0.95, y0: sp.position.y, u: u };
+        g.add(sp);
+      }
+      for (i = 0; i < anvilN; i++) {
+        u = i / (anvilN - 1);
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.3, color: 0xeef4ff });
+        sp = new THREE.Sprite(mat);
+        sp.position.set(0.6 + u * 4.8, 6.5 + Math.sin(u * 2.2) * 0.22, (u - 0.5) * 3.4);
+        s = 2.4 + u * 1.1;
+        sp.userData.puff = { kind: 'anvil', sx: s * 1.5, sy: s * 0.5, y0: sp.position.y, u: u };
+        g.add(sp);
+      }
+    } else {
+      /* 层状云：两层水平云毯 + 低空雨层云，边缘用大而淡的片铺开 */
+      var rows = [{ y: 3.55, w: 4.4, o: 0.24 }, { y: 4.4, w: 3.2, o: 0.18 }];
+      for (i = 0; i < 34; i++) {
+        var rr = rows[i % 2];
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: rr.o, color: 0xd8e3f2 });
+        sp = new THREE.Sprite(mat);
+        sp.position.set(0.3 + (i / 34) * 9.8, rr.y + Math.random() * 0.3, -Z + 0.4 + Math.random() * (2 * Z - 0.8));
+        s = rr.w + Math.random() * 1.9;
+        sp.scale.set(s, s * 0.32, 1);
         sp.userData.baseY = sp.position.y;
         sp.userData.baseX = sp.position.x;
         sp.userData.ph = Math.random() * 6.28;
+        sp.userData.sx = s;
+        sp.userData.sy = s * 0.32;
+        g.add(sp);
       }
-      g.add(sp);
     }
     return g;
   }
@@ -5696,23 +5872,80 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     var clouds = { cumulo: cloudField('cumulo'), layer: cloudField('layer') };
     scene.add(clouds.cumulo); scene.add(clouds.layer);
 
-    var rainTex = global.H.makeSoftTexture('rain');
-    var rainCount = 900;
-    var rainPos = new Float32Array(rainCount * 3);
-    var rainState = [];
-    for (var r = 0; r < rainCount; r++) {
-      rainState.push({ x: 0, y: Math.random() * 6, z: -Z + Math.random() * 2 * Z, v: 12 + Math.random() * 8 });
-      rainPos[r * 3] = 0; rainPos[r * 3 + 1] = rainState[r].y; rainPos[r * 3 + 2] = rainState[r].z;
+    /* 降雨：线段粒子（每滴一条倾斜雨丝）+ 地面涟漪，比点精灵更像真雨 */
+    var RAIN_N = 820;
+    var rainSeg = new Float32Array(RAIN_N * 6);
+    var rainDrops = [];
+    for (var r = 0; r < RAIN_N; r++) {
+      rainDrops.push({
+        x: (Math.random() * 2 - 1) * 14, y: Math.random() * 6,
+        z: -Z + Math.random() * 2 * Z,
+        len: 0.45 + Math.random() * 0.65,
+        sp: 13 + Math.random() * 9,
+        k: 0.55 + Math.random() * 0.45
+      });
     }
     var rainGeo = new THREE.BufferGeometry();
-    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-    var rainMat = new THREE.PointsMaterial({
-      map: rainTex, color: 0xa8d4ff, size: 0.5, transparent: true, opacity: 0.8,
-      depthWrite: false, sizeAttenuation: true
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainSeg, 3));
+    var rainMat = new THREE.LineBasicMaterial({
+      color: 0xcde6ff, transparent: true, opacity: 0.55, depthWrite: false
     });
-    var rainPts = new THREE.Points(rainGeo, rainMat);
+    var rainPts = new THREE.LineSegments(rainGeo, rainMat);
+    rainPts.frustumCulled = false; /* 顶点每帧变化，包围球不可信 */
     rainPts.visible = false;
     scene.add(rainPts);
+
+    /* 雨区水汽：稀疏大颗粒雾点，让雨幕有体积感 */
+    var MIST_N = 130;
+    var mistPos = new Float32Array(MIST_N * 3);
+    var mistState = [];
+    for (var mi = 0; mi < MIST_N; mi++) {
+      mistState.push({ x: 0, y: Math.random() * 4.5, z: -Z + Math.random() * 2 * Z, v: 0.7 + Math.random() * 0.8 });
+    }
+    var mistGeo = new THREE.BufferGeometry();
+    mistGeo.setAttribute('position', new THREE.BufferAttribute(mistPos, 3));
+    var mistMat = new THREE.PointsMaterial({
+      map: global.H.makeSoftTexture('cloud'), color: 0x9ec4ea, size: 2.4,
+      transparent: true, opacity: 0.06, depthWrite: false, sizeAttenuation: true
+    });
+    var mistPts = new THREE.Points(mistGeo, mistMat);
+    mistPts.frustumCulled = false;
+    mistPts.visible = false;
+    scene.add(mistPts);
+
+    /* 地面涟漪（雨滴落地） */
+    function ringTexture() {
+      var c = document.createElement('canvas');
+      c.width = c.height = 64;
+      var g2 = c.getContext('2d');
+      g2.strokeStyle = 'rgba(190,225,255,0.9)';
+      g2.lineWidth = 4;
+      g2.beginPath();
+      g2.arc(32, 32, 24, 0, Math.PI * 2);
+      g2.stroke();
+      var t = new THREE.CanvasTexture(c);
+      return t;
+    }
+    var ringTex = ringTexture();
+    var SPLASH_N = 54;
+    var splashGroup = new THREE.Group();
+    splashGroup.rotation.x = -Math.PI / 2;
+    splashGroup.position.y = 0.03;
+    scene.add(splashGroup);
+    var splashes = [];
+    for (var sp2 = 0; sp2 < SPLASH_N; sp2++) {
+      var smat = new THREE.MeshBasicMaterial({
+        map: ringTex, transparent: true, opacity: 0, depthWrite: false, color: 0xbfe2ff
+      });
+      var smesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), smat);
+      smesh.frustumCulled = false;
+      smesh.visible = false;
+      splashGroup.add(smesh);
+      splashes.push({
+        mesh: smesh, mat: smat, ph: Math.random(),
+        x: (Math.random() * 2 - 1) * 10, z: -Z + Math.random() * 2 * Z
+      });
+    }
 
     var snowCount = 260;
     var snowPos = new Float32Array(snowCount * 3);
@@ -5729,8 +5962,18 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       map: global.H.makeSoftTexture('snow'), color: 0xffffff, size: 0.28,
       transparent: true, opacity: 0.9, depthWrite: false
     }));
+    snowPts.frustumCulled = false;
     snowPts.visible = false;
     scene.add(snowPts);
+
+    /* 云影：云下雨区在地面上压暗一片 */
+    var cloudShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 40),
+      new THREE.MeshBasicMaterial({ color: 0x03060d, transparent: true, opacity: 0.2, depthWrite: false })
+    );
+    cloudShadow.rotation.x = -Math.PI / 2;
+    cloudShadow.position.y = 0.015;
+    scene.add(cloudShadow);
 
     /* 观测站 */
     var station = makeStation();
@@ -5797,9 +6040,8 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         var len = Math.sqrt(dx * dx + dy * dy) || 1;
         a.scale.setScalar(Math.max(0.7, len / 4.6));
       });
-      labels.front.text = '';
-      labels.slope.text = meta.slopeText;
-      labels.cold.text = type === 'warm' ? '冷气团' : '冷气团';
+      global.H.setLabelText(labels.front, '锋面 · ' + meta.name, { color: '#ffffff', size: 40, scale: 1.0 });
+      global.H.setLabelText(labels.slope, meta.slopeText, { color: '#9fb8d8', size: 32, scale: 0.78 });
     }
 
     var views = {
@@ -5883,49 +6125,93 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         /* 云 */
         cloudSum = cur.cloud;
         var cumOn = type !== 'warm';
-        clouds.cumulo.visible = !!st.show.clouds && cumOn && cloudSum > 0.05;
-        clouds.layer.visible = !!st.show.clouds && (!cumOn || cloudSum > 0.05);
-        clouds.cumulo.position.x = xf - 1.4;
-        clouds.layer.position.x = xf + 1.5;
+        clouds.cumulo.visible = !!st.show.clouds && cumOn && cloudSum > 0.03;
+        clouds.layer.visible = !!st.show.clouds && (!cumOn || cloudSum > 0.03);
+        clouds.cumulo.position.x = xf - 1.2;
+        clouds.layer.position.x = xf + 1.6;
         clouds.cumulo.children.forEach(function (sp) {
-          var u = sp.userData.puff.u;
-          var grow = 0.55 + 0.45 * cloudSum;
-          sp.scale.set(sp.userData.puff.s * grow, sp.userData.puff.s * grow * 0.9, 1);
-          sp.material.opacity = 0.18 + 0.5 * cloudSum;
-          sp.position.y = 2.4 + u * 4.6 * (0.65 + 0.35 * cloudSum);
+          var pd = sp.userData.puff;
+          var grow = 0.55 + 0.45 * Math.min(1, cloudSum * 1.05);
+          sp.scale.set(pd.sx * grow, pd.sy * grow, 1);
+          if (pd.kind === 'col') sp.position.y = pd.y0 + (cloudSum - 0.35) * 0.7 * pd.u;
+          sp.material.opacity = (pd.kind === 'anvil' ? 0.16 : pd.kind === 'base' ? 0.34 : 0.42) * (0.45 + 0.55 * cloudSum);
         });
         clouds.layer.children.forEach(function (sp) {
-          sp.material.opacity = 0.1 + 0.32 * cloudSum;
+          sp.material.opacity = 0.08 + 0.26 * cloudSum;
+          sp.scale.set(sp.userData.sx * (0.7 + 0.3 * cloudSum), sp.userData.sy, 1);
           sp.position.y = sp.userData.baseY + Math.sin(time * 0.6 + sp.userData.ph) * 0.12;
         });
 
-        /* 雨/雪 */
+        /* 雨/雪：雨区与 2D 视图同一套数据（FRONT.span），冷锋在锋后、暖锋在锋前 */
         var rain = cur.rain;
         var isSnow = cur.temp < 1.5;
+        var rsp = FRONT.span(type, t, 'rain');
+        var rL = Math.max(-L, Math.min(L, rsp.x0));
+        var rR = Math.max(-L, Math.min(L, rsp.x1));
+        var bandW = Math.max(0.6, rR - rL);
+        var slant = type === 'cold' ? -0.42 : type === 'warm' ? -0.16 : -0.26;
         rainPts.visible = !!st.show.rain && rain > 0.02 && !isSnow;
         snowPts.visible = !!st.show.rain && rain > 0.02 && isSnow;
-        rainMat.opacity = Math.min(0.9, 0.25 + rain * 0.75);
+        mistPts.visible = !!st.show.rain && rain > 0.05 && !isSnow;
+        rainMat.opacity = Math.min(0.85, 0.2 + rain * 0.8);
+        cloudShadow.visible = !!st.show.clouds;
+        cloudShadow.position.x = (rL + rR) / 2;
+        cloudShadow.scale.set(bandW * 0.62 + 1.2, (bandW * 0.62 + 1.2) * 0.8, 1);
+        cloudShadow.material.opacity = 0.06 + 0.22 * rain;
         if (rainPts.visible) {
-          var rLeft = xf + meta.rainOffset - meta.rainHalf;
-          var rRight = xf + meta.rainOffset + meta.rainHalf;
-          var active = Math.floor(rainCount * Math.min(1, 0.25 + rain));
-          rainGeo.setDrawRange(0, active);
+          var active = Math.floor(RAIN_N * Math.min(1, 0.2 + rain * 0.9));
+          rainGeo.setDrawRange(0, active * 2);
           for (var q = 0; q < active; q++) {
-            var rs = rainState[q];
-            rs.y -= rs.v * dt;
+            var rs = rainDrops[q];
+            rs.y -= rs.sp * dt;
             if (rs.y < 0.05) {
-              rs.y = 4.6 + Math.random() * 2.4;
-              rs.x = rLeft + Math.random() * Math.max(0.2, rRight - rLeft);
+              rs.y = 6.2 + Math.random() * 1.4;
+              rs.x = rL + Math.random() * bandW;
             }
-            rainPos[q * 3] = rs.x - 0.12;
-            rainPos[q * 3 + 1] = rs.y;
-            rainPos[q * 3 + 2] = rs.z;
+            var len = rs.len;
+            rainSeg[q * 6] = rs.x;
+            rainSeg[q * 6 + 1] = rs.y;
+            rainSeg[q * 6 + 2] = rs.z;
+            rainSeg[q * 6 + 3] = rs.x + slant * len;
+            rainSeg[q * 6 + 4] = rs.y - len;
+            rainSeg[q * 6 + 5] = rs.z;
           }
           rainGeo.attributes.position.needsUpdate = true;
         }
+        if (mistPts.visible) {
+          for (var mq = 0; mq < MIST_N; mq++) {
+            var ms = mistState[mq];
+            ms.y -= ms.v * dt;
+            if (ms.y < 0.4) {
+              ms.y = 4.2 + Math.random() * 1.6;
+              ms.x = rL + Math.random() * bandW;
+            }
+            if (!ms.x) ms.x = rL + Math.random() * bandW;
+            mistPos[mq * 3] = ms.x;
+            mistPos[mq * 3 + 1] = ms.y;
+            mistPos[mq * 3 + 2] = ms.z;
+          }
+          mistGeo.attributes.position.needsUpdate = true;
+          mistMat.opacity = 0.03 + 0.07 * rain;
+        }
+        /* 地面涟漪：雨区边缘扩散的水圈 */
+        var splashOn = !!st.show.rain && rain > 0.06 && !isSnow;
+        for (var sq = 0; sq < SPLASH_N; sq++) {
+          var spl = splashes[sq];
+          if (!splashOn) { spl.mesh.visible = false; continue; }
+          spl.ph += dt * (1.3 + 0.9 * rain);
+          if (spl.ph >= 1) {
+            spl.ph = 0;
+            spl.x = rL + Math.random() * bandW;
+            spl.z = -Z + Math.random() * 2 * Z;
+          }
+          spl.mesh.visible = true;
+          var sc = 0.26 + spl.ph * 1.1;
+          spl.mesh.scale.set(sc, sc, 1);
+          spl.mesh.position.set(spl.x, -spl.z, 0);
+          spl.mat.opacity = (1 - spl.ph) * (0.22 + 0.45 * rain);
+        }
         if (snowPts.visible) {
-          var sLeft = xf + meta.rainOffset - meta.rainHalf;
-          var sRight = xf + meta.rainOffset + meta.rainHalf;
           var actS = Math.floor(snowCount * Math.min(1, 0.4 + rain));
           snowGeo.setDrawRange(0, actS);
           for (var w = 0; w < actS; w++) {
@@ -5933,7 +6219,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
             ss.y -= ss.v * dt;
             if (ss.y < 0.05) {
               ss.y = 4.6 + Math.random() * 2;
-              ss.x = sLeft + Math.random() * Math.max(0.2, sRight - sLeft);
+              ss.x = rL + Math.random() * bandW;
             }
             snowPos[w * 3] = ss.x + Math.sin(time * 1.4 + ss.ph) * 0.25;
             snowPos[w * 3 + 1] = ss.y;
@@ -5964,21 +6250,15 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         labels.move.visible = showLabels;
         labels.slope.visible = showLabels;
 
-        /* 冷气团在移动方向后方 */
-        var behindX = type === 'warm' ? -L * 0.55 : xf - 7;
-        var aheadX = type === 'warm' ? xf + 6 : L * 0.55;
-        if (type === 'warm') { behindX = xf + 7; aheadX = -L * 0.5; }
-        labels.cold.position.set(behindX, 1.1, 0);
-        labels.warm.position.set(type === 'warm' ? -6 : Math.min(L * 0.72, xf + 6.5), type === 'warm' ? 2.4 : 1.0, 0);
-        labels.cold.text = '';
-        labels.cold.material.map = null;
-        /* 文字精灵内容固定，冷/暖标签位置随类型互换 */
-        var coldLabelText = type === 'warm' ? '冷气团' : '冷气团';
-        labels.cold.position.set(type === 'warm' ? xf + 7 : xf - 7, 1.1, 0);
-        labels.warm.position.set(type === 'warm' ? -7 : xf + 7, type === 'warm' ? 1.1 : 1.1, 0);
+        /* 冷/暖气团标签位置随类型互换：冷气团总在锋面后方（移动方向一侧） */
+        var left = -L * 0.88, right = L * 0.88;
+        var coldX = type === 'warm' ? Math.min(right, xf + 7.5) : Math.max(left, xf - 7.5);
+        var warmX = type === 'warm' ? Math.max(left, xf - 7.5) : Math.min(right, xf + 7.5);
+        labels.cold.position.set(coldX, 1.2, 0);
+        labels.warm.position.set(warmX, 1.2, 0);
         labels.front.position.set(xf - (type === 'warm' ? 1.6 : 2.2), (type === 'warm' ? 3.4 : 4.6), 0);
         labels.line.position.set(xf, 0.5, Z * 0.72);
-        labels.rain.position.set(xf + meta.rainOffset, 5.4, 0);
+        labels.rain.position.set((rL + rR) / 2, 5.2, 0);
         labels.station.position.set(0, 2.9, 0);
         labels.slope.position.set(xf - (type === 'warm' ? 6 : 5), 0.5, Z * 0.86);
         labels.move.position.set(type === 'warm' ? xf + 4 : xf - 4, 0.9, -Z * 0.78);
@@ -6005,6 +6285,10 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         renderer.dispose();
       }
     };
+    api.frameCount = 0;
+    var _frame = api.frame;
+    api.frame = function (st, dt) { api.frameCount++; _frame(st, dt); };
+    global.__M1 = api;
     return api;
   }
 
@@ -6577,6 +6861,12 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
     el.phaseBadge.hidden = state.model !== 'M1';
     el.mapBar.hidden = state.model !== 'M3';
     el.monthWrap.hidden = !(state.model === 'M3' && state.mapMode === 'rainbelt');
+    /* 「天气图」模式条与月份滑条要跟 state 同步（含 URL 参数进入时） */
+    Array.prototype.forEach.call(el.mapBar.querySelectorAll('[data-map]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-map') === state.mapMode);
+    });
+    if (el.monthSlider) el.monthSlider.value = String(state.month);
+    if (el.monthLabel) el.monthLabel.textContent = state.month + ' 月';
   }
 
   /* ---------------- 类型按钮 / 图例 ---------------- */
@@ -6700,6 +6990,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
         }
       }
     } catch (e) {
+      global.__frameErr = String(e && e.stack || e);
       frameError++;
       if (frameError < 4 && now - lastFrameErrorToast > 4000) {
         lastFrameErrorToast = now;
@@ -6990,13 +7281,21 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
       '<div class="verdict v-' + (j.type || 'none') + '"><b>' + badge + '</b><span>' + j.title + '</span>' +
       (conf ? '<em>' + conf + '</em>' : '') + '</div>' +
       '<ul class="reasons">' + j.reasons.map(function (r) { return '<li>' + r + '</li>'; }).join('') + '</ul>' +
-      (demo ? '<button id="demoBtn" class="primary">用「' + F.meta[demo].name + '」回到课堂演示 →</button>' :
-        '<p class="dim">当前实况与三种锋面典型特征都不吻合，可先在知识库复习判据，或查看今天的天气图。</p>');
-    var db = doc.getElementById('demoBtn');
-    if (db) db.addEventListener('click', function () {
-      state.type = demo; state.t = 0; state.playing = true;
+      (demo
+        ? '<button id="demoBtn" class="primary">用「' + F.meta[demo].name + '」回到课堂演示 →</button>'
+        : '<p class="dim">当前实况与三种锋面典型特征都不吻合，可先在知识库复习判据，或直接看三种锋的动画对比：</p>' +
+          '<div class="demo-row">' + ['cold', 'warm', 'stationary'].map(function (t) {
+            return '<button class="chip" data-demo="' + t + '">看' + F.meta[t].name + '</button>';
+          }).join('') + '</div>');
+    function jumpDemo(type) {
+      state.type = type; state.t = 0; state.playing = true;
       syncSlider(); updatePlayBtn(); buildTypes(); setModel('M1');
-      toast('已切换到' + F.meta[demo].name + '演示');
+      toast('已切换到' + F.meta[type].name + '演示');
+    }
+    var db = doc.getElementById('demoBtn');
+    if (db) db.addEventListener('click', function () { jumpDemo(demo); });
+    Array.prototype.forEach.call(el.liveJudge.querySelectorAll('[data-demo]'), function (b) {
+      b.addEventListener('click', function () { jumpDemo(b.getAttribute('data-demo')); });
     });
     renderLiveChart();
   }

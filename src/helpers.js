@@ -65,6 +65,24 @@
     return sp;
   }
 
+  /* 就地改写一个文字精灵：重绘贴图、复用它自己的材质，避免每帧新建贴图 */
+  function setLabelText(sprite, text, opts) {
+    if (!sprite || !sprite.material) return sprite;
+    opts = opts || {};
+    var fresh = makeLabel(text, opts);
+    var oldMap = sprite.material.map;
+    sprite.material.map = fresh.material.map;
+    sprite.material.transparent = true;
+    sprite.material.needsUpdate = true;
+    if (oldMap && oldMap.dispose) oldMap.dispose();
+    sprite.userData.baseScale = fresh.userData.baseScale;
+    sprite.userData.aspect = fresh.userData.aspect;
+    sprite.scale.set(fresh.scale.x, fresh.scale.y, 1);
+    /* 断开临时精灵对贴图的引用，防止它被回收时连带 dispose 已交接的贴图 */
+    fresh.material.map = null;
+    return sprite;
+  }
+
   function makeLine(points, color, opts) {
     opts = opts || {};
     var geo = new THREE.BufferGeometry().setFromPoints(points);
@@ -357,6 +375,7 @@
     PALETTE: PALETTE,
     roundRect: roundRect,
     makeLabel: makeLabel,
+    setLabelText: setLabelText,
     makeLine: makeLine,
     makeCircleLine: makeCircleLine,
     makeSoftTexture: makeSoftTexture,

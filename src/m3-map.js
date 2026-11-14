@@ -438,18 +438,20 @@
       w / 2, h / 2, 'rgba(255,180,120,0.92)', 12 * sc, 'center', true);
   }
 
-  /* 底图参数：rainbelt 用真实中国图，cyclone 用东亚区域世界图 */
+  /* 底图参数：rainbelt 用真实中国图，cyclone 用东亚区域世界图
+     注意配色：陆地比海洋亮一档（#12233c vs #070d18），省界/海岸线提亮，
+     否则整张图对比度太低、看不清轮廓。 */
   function geoSpec(mode, month) {
     if (mode === 'rainbelt') {
       return {
         opts: {
-          ocean: '#070d18',
-          land: '#0e1a2c',
-          border: 'rgba(120,160,220,0.20)',
-          borderWidth: 0.7,
+          ocean: '#081120',
+          land: '#17304f',
+          border: 'rgba(160,196,246,0.45)',
+          borderWidth: 0.9,
           cities: false,
           highlight: RAIN_HIGHLIGHT[month] || [],
-          highlightFill: 'rgba(78,161,255,0.16)',
+          highlightFill: 'rgba(78,161,255,0.22)',
           insetPad: 8
         }
       };
@@ -457,10 +459,119 @@
     return {
       opts: {
         lonMin: 100, lonMax: 140, latMin: 18, latMax: 50,
-        ocean: '#070d18', land: '#0e1a2c',
-        border: 'rgba(120,160,220,0.18)', borderWidth: 0.6
+        ocean: '#081120', land: '#17304f',
+        border: 'rgba(160,196,246,0.42)', borderWidth: 0.85
       }
     };
+  }
+
+  /* GEO 的 LCC 投影 y 轴朝北（数值随纬度增大），而 canvas 的 y 轴向下；
+     GEO.drawChina 直接用它绘制会“南海诸岛在上、黑龙江在下”，南北颠倒。
+     这里把投影的 y 翻转，得到“北在上、南在下”的正确朝向（不改 geo.js）。 */
+  function northUpProj(proj, ph) {
+    /* GEO.chinaProjector 现已修正为“北在上”；若检测到投影本身已经北在上，
+       则直接复用，避免二次翻转又把地图倒过来。 */
+    try {
+      var south = proj.project(105, 20), north = proj.project(105, 45);
+      if (north.y < south.y) return proj;
+    } catch (e) { /* 投影异常时按旧逻辑翻转 */ }
+    return {
+      project: function (lon, lat) {
+        var p = proj.project(lon, lat);
+        return { x: p.x, y: ph - p.y };
+      }
+    };
+  }
+
+  /* 北在上的真实中国底图：海岸线 / 省界 / 省份高亮 / 南海诸岛插图。
+     数据与投影都取自 GEO / GEO_CHINA，仅把 y 轴翻正；配色沿用 geoSpec。
+     返回北向上的投影，供雨带/城市等动态层统一使用。 */
+  function paintChinaBase(g, pw, ph, month) {
+    var G = global.GEO, CH = global.GEO_CHINA;
+    var opts = geoSpec('rainbelt', month).opts;
+    var proj = northUpProj(G.chinaProjector(pw, ph, 10), ph);
+    var pv, i, j, q, ring;
+
+    g.save();
+    g.lineJoin = 'round';
+    if (opts.ocean) { g.fillStyle = opts.ocean; g.fillRect(0, 0, pw, ph); }
+
+    /* 省级陆地 + 省界 */
+    g.fillStyle = opts.land;
+    g.strokeStyle = opts.border;
+    g.lineWidth = opts.borderWidth;
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, proj.project);
+      g.fill();
+    }
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, proj.project);
+      g.stroke();
+    }
+
+    /* 高亮当月雨带覆盖的省份 */
+    if (opts.highlight && opts.highlight.length) {
+      g.fillStyle = opts.highlightFill;
+      for (i = 0; i < CH.provinces.length; i++) {
+        pv = CH.provinces[i];
+        if (opts.highlight.some(function (n) { return pv.name.indexOf(n) >= 0; })) {
+          G.pathRings(g, pv.rings, proj.project);
+          g.fill();
+        }
+      }
+    }
+
+    /* 南海诸岛插图（右下角，含九段线；插图同样北在上） */
+    var iw = Math.max(48, Math.min(pw * 0.2, 96));
+    var ih = iw * 1.35;
+    var ipd = opts.insetPad === undefined ? 12 : opts.insetPad;
+    var ix = pw - iw - ipd, iy = ph - ih - ipd;
+    var inProj = northUpProj(
+      G.makeProjector(G.lcc(25, 47, 105), 106, 123, 2, 24, iw, ih, 4), ih);
+    g.save();
+    g.fillStyle = 'rgba(7,13,24,0.82)';
+    g.fillRect(ix, iy, iw, ih);
+    g.strokeStyle = 'rgba(150,180,230,0.45)';
+    g.lineWidth = 1;
+    g.strokeRect(ix, iy, iw, ih);
+    g.translate(ix, iy);
+    /* 插图必须裁剪到小框内：否则超出经度 106—123°E / 纬度 2—24°N 的省份
+       （新疆、内蒙古等）会“溢出”到主图上，形成一块多余的小中国轮廓 */
+    g.beginPath();
+    g.rect(0, 0, iw, ih);
+    g.clip();
+    g.fillStyle = opts.land;
+    g.strokeStyle = opts.border;
+    g.lineWidth = 0.5;
+    for (i = 0; i < CH.provinces.length; i++) {
+      G.pathRings(g, CH.provinces[i].rings, inProj.project);
+      g.fill();
+      g.stroke();
+    }
+    if (CH.jd && CH.jd.rings) {
+      g.strokeStyle = 'rgba(150,190,240,0.85)';
+      g.lineWidth = Math.max(0.8, iw / 60);
+      for (i = 0; i < CH.jd.rings.length; i++) {
+        ring = CH.jd.rings[i];
+        if (!ring || ring.length < 2) continue;
+        g.beginPath();
+        for (j = 0; j < ring.length; j++) {
+          q = inProj.project(ring[j][0], ring[j][1]);
+          if (j === 0) g.moveTo(q.x, q.y); else g.lineTo(q.x, q.y);
+        }
+        g.stroke();
+      }
+    }
+    g.restore();
+
+    /* 插图标签（正立文字） */
+    g.fillStyle = 'rgba(219,230,255,0.78)';
+    g.font = 'bold 9px ' + FONT;
+    g.textAlign = 'right';
+    g.textBaseline = 'alphabetic';
+    g.fillText('南海诸岛', ix + iw - 3, iy + ih - 3);
+    g.restore();
+    return proj;
   }
 
   /* 生成/复用底图缓存。返回 { cv, proj, inset, geoOK, landPath } */
@@ -487,9 +598,10 @@
     var bg = off.ctx;
     if (mode === 'rainbelt') {
       if (hasGeo) {
-        var out = global.GEO.drawChina(bg, pw, ph, geoSpec(mode, month).opts);
-        cache.proj = out.projector;
-        cache.inset = out.inset;
+        /* 注意：不用 GEO.drawChina 直接画（它的 LCC y 轴朝北会让地图南北颠倒），
+           改用同一套 GEO 数据 + 翻正 y 轴的自绘底图。 */
+        cache.proj = paintChinaBase(bg, pw, ph, month);
+        cache.inset = null;
         /* 陆地裁剪路径（省界多边形）预生成一次，雨带只画在陆地上 */
         if (typeof Path2D !== 'undefined') {
           try {
@@ -523,7 +635,7 @@
   /* 无法离屏时（如测试桩），直接在当前上下文画底图 */
   function paintBaseDirect(g, mode, month, pw, ph) {
     if (mode === 'rainbelt' && global.GEO && global.GEO_CHINA) {
-      return global.GEO.drawChina(g, pw, ph, geoSpec(mode, month).opts);
+      return { projector: paintChinaBase(g, pw, ph, month), inset: null };
     }
     if (mode !== 'rainbelt' && global.GEO && global.GEO_WORLD) {
       return {
@@ -732,9 +844,10 @@
       g.lineWidth = k === 5 ? 1.6 : 1.1;
       g.stroke();
       if (labelsOn) {
-        var q2 = isoPoint(k, 2.42 + k * 0.14);   /* 左下方向标数值 */
+        /* 数值标签沿西南→西北的弧线错开，避免内圈数值挤在一起 */
+        var q2 = isoPoint(k, 2.05 + k * 0.30);
         haloText(g, String(996 + 4 * k), q2.x, q2.y,
-          'rgba(150,190,255,0.66)', 9.5 * sc, 'center', false);
+          'rgba(150,190,255,0.72)', 9.5 * sc, 'center', false);
       }
     }
 
@@ -790,10 +903,10 @@
 
     if (!labelsOn) { g.restore(); return; }
 
-    /* 低压中心 */
+    /* 低压中心：L 在上、说明文字移到 L 上方，避免与 B 站“过境时（冷锋）”重叠 */
     haloText(g, 'L', cx, cy - 5 * sc, '#ff8f86', 26 * sc, 'center', true);
-    haloText(g, '低压中心 996 hPa', cx, cy + 18 * sc,
-      'rgba(255,180,170,0.92)', 10 * sc, 'center', false);
+    haloText(g, '低压中心 996 hPa', cx, cy - 38 * sc,
+      'rgba(255,180,170,0.94)', 10 * sc, 'center', false);
 
     /* 锋面名称 */
     var iCold = pathInfo(coldPts), iWarm = pathInfo(warmPts);
@@ -913,8 +1026,8 @@
 
   /* 雨带内的小雨滴（斜短线），强化“多雨”观感 */
   function rainDrops(g, proj, cfg, sc) {
-    g.strokeStyle = 'rgba(160,215,255,0.62)';
-    g.lineWidth = 1.3 * sc;
+    g.strokeStyle = 'rgba(185,228,255,0.80)';
+    g.lineWidth = 1.4 * sc;
     g.lineCap = 'round';
     var i, lon, lat, p;
     for (i = 0; i < 10; i++) {
@@ -939,8 +1052,8 @@
     }
     g.save();
     g.setLineDash([7 * sc, 5 * sc]);
-    g.strokeStyle = 'rgba(255,158,203,0.92)';
-    g.lineWidth = 2.2 * sc;
+    g.strokeStyle = 'rgba(255,170,210,0.98)';
+    g.lineWidth = 2.4 * sc;
     g.lineCap = 'round';
     polyline(g, pts, false);
     g.restore();
@@ -951,9 +1064,9 @@
     var se = cfg.se;
     var i, p;
     g.save();
-    g.setLineDash([6 * sc, 5 * sc]);
-    g.strokeStyle = 'rgba(255,210,120,0.62)';
-    g.lineWidth = 1.5 * sc;
+    g.setLineDash([7 * sc, 5 * sc]);
+    g.strokeStyle = 'rgba(255,216,132,0.94)';
+    g.lineWidth = 1.8 * sc;
     g.beginPath();
     for (i = 0; i <= 48; i++) {
       var a = i / 48 * TAU;
@@ -965,7 +1078,7 @@
     g.restore();
     var lp = proj.project(se.lon + se.rx * 0.72, se.lat + se.ry * 0.98);
     haloText(g, '588 线（西太副高）', lp.x, lp.y - 4 * sc,
-      'rgba(255,210,120,0.85)', 9 * sc, 'center', false);
+      'rgba(255,216,132,0.96)', 10 * sc, 'center', false);
   }
 
   /* 城市：按月份选 4 个，落在雨带纬度内的金色高亮 */
@@ -988,20 +1101,20 @@
       var p = proj.project(ct.lon, ct.lat);
       if (inBand) {
         g.beginPath();
-        g.arc(p.x, p.y, 5.4 * sc, 0, TAU);
-        g.fillStyle = 'rgba(255,211,107,0.16)';
+        g.arc(p.x, p.y, 6.2 * sc, 0, TAU);
+        g.fillStyle = 'rgba(255,211,107,0.24)';
         g.fill();
-        g.strokeStyle = 'rgba(255,211,107,0.62)';
-        g.lineWidth = 1.2 * sc;
+        g.strokeStyle = 'rgba(255,211,107,0.95)';
+        g.lineWidth = 1.4 * sc;
         g.stroke();
       }
       g.beginPath();
-      g.arc(p.x, p.y, 2.8 * sc, 0, TAU);
-      g.fillStyle = inBand ? '#ffd36b' : 'rgba(219,230,255,0.82)';
+      g.arc(p.x, p.y, 3.2 * sc, 0, TAU);
+      g.fillStyle = inBand ? '#ffd36b' : 'rgba(219,230,255,0.92)';
       g.fill();
       if (labelsOn) {
-        haloText(g, ct.n, p.x + 7 * sc, p.y - 6 * sc,
-          inBand ? '#ffd36b' : 'rgba(219,230,255,0.72)', 10 * sc, 'left', inBand);
+        haloText(g, ct.n, p.x + 8 * sc, p.y - 7 * sc,
+          inBand ? '#ffe08a' : 'rgba(219,230,255,0.82)', 10.5 * sc, 'left', inBand);
       }
     }
   }
@@ -1062,7 +1175,8 @@
       g.clip();
       clipped = true;
     }
-    fillHatchPoly(g, bandPts, 'rgba(143,200,255,0.24)', 'rgba(143,200,255,0.55)', 8 * sc, 1);
+    fillHatchPoly(g, bandPts, 'rgba(143,200,255,0.30)',
+      'rgba(170,220,255,0.78)', 8 * sc, 1.1);
     rainDrops(g, proj, cfg, sc);
     dashedFrontLine(g, proj, cfg, sc);
     if (clipped) g.restore();
@@ -1075,11 +1189,11 @@
 
     /* 雨带名称 */
     var lbl = proj.project((cfg.lonA + cfg.lonB) / 2 - (cfg.lonB - cfg.lonA) * 0.12, cfg.lb + 1.6);
-    haloText(g, cfg.name, lbl.x, lbl.y - 4 * sc, '#cfebff', 11 * sc, 'center', true);
+    haloText(g, cfg.name, lbl.x, lbl.y - 4 * sc, '#e8f4ff', 11.5 * sc, 'center', true);
 
-    /* 7—8 月：长江中下游受副高控制出现伏旱 */
+    /* 7—8 月：长江中下游受副高控制出现伏旱（标在城市以南，避免压住城市名） */
     if (cfg.dry && labelsOn) {
-      var dp = proj.project(118.5, 30.2);
+      var dp = proj.project(115.4, 27.2);
       haloText(g, '长江中下游 · 伏旱', dp.x, dp.y + 4 * sc,
         'rgba(255,200,140,0.95)', 10 * sc, 'center', true);
     }
@@ -1120,7 +1234,7 @@
     g.stroke();
 
     /* 符号行 */
-    var sy = box.y + Math.min(box.h * 0.42, (34 + 36) * sc);
+    var sy = box.y + 66 * sc;
     var x0 = box.x + padX, x1 = box.x + box.w - padX;
     if (x1 - x0 > 40) {
       var seg = [{ x: x0, y: sy }, { x: x1, y: sy }];
@@ -1133,12 +1247,12 @@
       else symbolsAlong(g, seg, type === 'cold' ? 'tri' : 'semi', size, size * 2.7, col, 1);
     }
 
-    /* 移动方向提示（准静止锋除外） */
+    /* 移动方向提示（准静止锋除外）：画在符号线上方，避免压住符号 */
     if (type !== 'stationary') {
-      var ax = box.x + box.w - padX - 16 * sc;
-      var ay = box.y + 56 * sc;
-      drawArrow(g, ax, ay + 15 * sc, ax, ay, col, 1.3 * sc, 4.5 * sc);
-      haloText(g, '移动方向', ax - 4 * sc, ay + 8 * sc, C.dim, 8.5 * sc, 'right', false);
+      var ax2 = x1 - 6 * sc;
+      var ay = sy - 19 * sc;
+      drawArrow(g, ax2 - 26 * sc, ay, ax2, ay, col, 1.3 * sc, 4.5 * sc);
+      haloText(g, '移动方向', ax2 - 30 * sc, ay + 3 * sc, C.dim, 8.5 * sc, 'right', false);
     }
 
     /* 要点行 */
@@ -1148,8 +1262,8 @@
       ['实例', m.example]
     ];
     var maxW = box.w - padX * 2;
-    var ry = sy + 21 * sc;
-    var rowH = 25 * sc;
+    var ry = sy + 24 * sc;
+    var rowH = 26 * sc;
     for (i = 0; i < rows.length; i++) {
       if (ry + 10 * sc > box.y + box.h - 8 * sc) break;
       haloText(g, rows[i][0], box.x + padX, ry, 'rgba(219,230,255,0.46)', 9.5 * sc, 'left', true);
@@ -1171,7 +1285,7 @@
     var cards = [], i;
     if (horiz) {
       var cw = (pw - 2 * gap) / 3;
-      var ch = Math.min(ph, 320 * sc);
+      var ch = Math.min(ph, 212 * sc);
       var y0 = P.y0 + (ph - ch) / 2;
       for (i = 0; i < 3; i++) cards.push({ x: P.x0 + i * (cw + gap), y: y0, w: cw, h: ch });
     } else {
@@ -1214,9 +1328,11 @@
       c2d.lineJoin = 'round';
       c2d.setLineDash([]);
 
-      /* 标题（左上） */
-      haloText(c2d, info.title, 15 * sc, 22 * sc, C.text, 15 * sc, 'left', true);
-      haloText(c2d, info.sub, w - 15 * sc, 22 * sc, C.dim, 10.5 * sc, 'right', false);
+      /* 标题下移：页面顶部有浮层按钮（模式切换/月份滑条/阶段徽标），
+         y < 58px 内除背景外不画任何文字；标题放 y≈64–96 左侧，右侧留空。 */
+      haloText(c2d, info.title, 16 * sc, 82 * sc, C.text, 15 * sc, 'left', true);
+      haloText(c2d, info.sub, 17 * sc, 99 * sc,
+        'rgba(219,230,255,0.52)', 10.5 * sc, 'left', false);
 
       /* 先算底部图例/说明所占高度，再定绘图区 */
       var maxLegendW = w - 64 * sc;
@@ -1232,9 +1348,10 @@
       var P = {
         x0: 14 * sc,
         x1: w - 14 * sc,
-        y0: 44 * sc,
+        y0: Math.min(118 * sc, Math.max(78 * sc, h * 0.17)),
         y1: h - bh - 14 * sc
       };
+      if (P.y1 - P.y0 < 40 * sc) P.y0 = Math.max(20 * sc, P.y1 - 40 * sc);
 
       /* 绘图区裁剪，内容不侵入底部面板 */
       c2d.save();

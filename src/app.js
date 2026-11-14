@@ -171,6 +171,12 @@
     el.phaseBadge.hidden = state.model !== 'M1';
     el.mapBar.hidden = state.model !== 'M3';
     el.monthWrap.hidden = !(state.model === 'M3' && state.mapMode === 'rainbelt');
+    /* 「天气图」模式条与月份滑条要跟 state 同步（含 URL 参数进入时） */
+    Array.prototype.forEach.call(el.mapBar.querySelectorAll('[data-map]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-map') === state.mapMode);
+    });
+    if (el.monthSlider) el.monthSlider.value = String(state.month);
+    if (el.monthLabel) el.monthLabel.textContent = state.month + ' 月';
   }
 
   /* ---------------- 类型按钮 / 图例 ---------------- */
@@ -294,6 +300,7 @@
         }
       }
     } catch (e) {
+      global.__frameErr = String(e && e.stack || e);
       frameError++;
       if (frameError < 4 && now - lastFrameErrorToast > 4000) {
         lastFrameErrorToast = now;
@@ -584,13 +591,21 @@
       '<div class="verdict v-' + (j.type || 'none') + '"><b>' + badge + '</b><span>' + j.title + '</span>' +
       (conf ? '<em>' + conf + '</em>' : '') + '</div>' +
       '<ul class="reasons">' + j.reasons.map(function (r) { return '<li>' + r + '</li>'; }).join('') + '</ul>' +
-      (demo ? '<button id="demoBtn" class="primary">用「' + F.meta[demo].name + '」回到课堂演示 →</button>' :
-        '<p class="dim">当前实况与三种锋面典型特征都不吻合，可先在知识库复习判据，或查看今天的天气图。</p>');
-    var db = doc.getElementById('demoBtn');
-    if (db) db.addEventListener('click', function () {
-      state.type = demo; state.t = 0; state.playing = true;
+      (demo
+        ? '<button id="demoBtn" class="primary">用「' + F.meta[demo].name + '」回到课堂演示 →</button>'
+        : '<p class="dim">当前实况与三种锋面典型特征都不吻合，可先在知识库复习判据，或直接看三种锋的动画对比：</p>' +
+          '<div class="demo-row">' + ['cold', 'warm', 'stationary'].map(function (t) {
+            return '<button class="chip" data-demo="' + t + '">看' + F.meta[t].name + '</button>';
+          }).join('') + '</div>');
+    function jumpDemo(type) {
+      state.type = type; state.t = 0; state.playing = true;
       syncSlider(); updatePlayBtn(); buildTypes(); setModel('M1');
-      toast('已切换到' + F.meta[demo].name + '演示');
+      toast('已切换到' + F.meta[type].name + '演示');
+    }
+    var db = doc.getElementById('demoBtn');
+    if (db) db.addEventListener('click', function () { jumpDemo(demo); });
+    Array.prototype.forEach.call(el.liveJudge.querySelectorAll('[data-demo]'), function (b) {
+      b.addEventListener('click', function () { jumpDemo(b.getAttribute('data-demo')); });
     });
     renderLiveChart();
   }

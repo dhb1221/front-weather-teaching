@@ -163,6 +163,16 @@ if (GEO) {
     const r = GEO.drawChina(ctx, 1200, 700, {});
     const pt = r && r.projector && r.projector.project(116.4, 39.9);
     ok('drawChina 可绘制且返回投影器', !!(r && r.projector && pt && isFinite(pt.x) && isFinite(pt.y)));
+    if (r && r.projector) {
+      const hrb = r.projector.project(126.53, 45.8);
+      const bj = r.projector.project(116.41, 39.9);
+      const gz = r.projector.project(113.26, 23.13);
+      const hk = r.projector.project(114.17, 22.32);
+      ok('中国地图北在上：哈尔滨 < 北京 < 广州（y 递增）',
+        hrb.y < bj.y && bj.y < gz.y, [hrb.y, bj.y, gz.y].map((v) => v.toFixed(0)).join(' / '));
+      ok('港澳台与南海方向正确：香港在广州附近、y 相近',
+        Math.abs(hk.y - gz.y) < 40 && Math.abs(hk.x - gz.x) < 80);
+    }
     const ctx2 = fakeCtx(1200, 700);
     const w = GEO.drawWorld(ctx2, 1200, 700, { lonMin: 100, lonMax: 140, latMin: 18, latMax: 50 });
     const beijing = w.project(116.4, 39.9), guangzhou = w.project(113.3, 23.1);

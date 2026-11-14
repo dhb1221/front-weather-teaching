@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>M1 3D 本地验收</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden; }
+  #gl { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<script src="../vendor/three.min.js"></script>
+<script src="../src/front-data.js"></script>
+<script src="../src/helpers.js"></script>
+<script src="../src/scene3d.js"></script>
+<script>
+(function () {
+  var q = {};
+  (location.search || '').replace(/^\?/, '').split('&').forEach(function (kv) {
+    if (!kv) return;
+    var i = kv.indexOf('=');
+    q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1));
+  });
+  var cv = document.getElementById('gl');
+  var m1 = window.MODELS.M1({ canvas: cv });
+  function resize() {
+    cv.width = window.innerWidth;
+    cv.height = window.innerHeight;
+    m1.resize(cv.width, cv.height);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  var state = {
+    type: q.type || 'cold',
+    t: parseFloat(q.t || '0.55'),
+    playing: false, speed: 1, model: 'M1',
+    show: { slope: true, air: true, clouds: true, rain: true, labels: true, grid: true }
+  };
+  m1.setView(q.view || 'iso');
+
+  var last = performance.now();
+  function loop(now) {
+    var dt = Math.min(0.05, (now - last) / 1000) || 0.016;
+    last = now;
+    try { m1.frame(state, dt); } catch (e) { window.__frameErr = String(e && e.stack || e); }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  window.__M1 = m1;
+  window.__state = state;
+})();
+</script>
+</body>
+</html>

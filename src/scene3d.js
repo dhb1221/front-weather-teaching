@@ -119,39 +119,61 @@
   function cloudField(kind) {
     var tex = global.H.makeSoftTexture('cloud');
     var g = new THREE.Group();
-    var n = kind === 'cumulo' ? 16 : 34;
-    for (var i = 0; i < n; i++) {
-      var mat = new THREE.SpriteMaterial({
-        map: tex, transparent: true, depthWrite: false,
-        opacity: kind === 'cumulo' ? 0.5 : 0.34
-      });
-      var sp = new THREE.Sprite(mat);
-      if (kind === 'cumulo') {
-        var u = i / (n - 1);
-        var ang = Math.random() * Math.PI * 2;
-        var r = 1.9 * (1 - u * 0.55);
-        sp.position.set(
-          Math.cos(ang) * r * 0.7,
-          2.4 + u * 4.6 + Math.random() * 0.6,
-          Math.sin(ang) * r
-        );
-        var s = 2.2 + (1 - u) * 2.6 + Math.random();
-        sp.scale.set(s, s * 0.85, 1);
-        sp.userData.puff = { u: u, ox: sp.position.x, oy: sp.position.y, oz: sp.position.z, s: s };
-      } else {
-        var row = i % 2;
-        sp.position.set(
-          0.6 + Math.random() * 9.5,
-          3.1 + row * 0.9 + Math.random() * 0.5,
-          -Z + 0.5 + Math.random() * (2 * Z - 1)
-        );
-        var sw = 3.2 + Math.random() * 2.6;
-        sp.scale.set(sw, sw * 0.42, 1);
+    var i, mat, sp, u, s, r, ang;
+    if (kind === 'cumulo') {
+      /* 积雨云：底部扁平云盘 + 高耸云柱 + 顶部云砧（向 +x 铺展） */
+      var baseN = 9, colN = 11, anvilN = 7;
+      for (i = 0; i < baseN; i++) {
+        u = i / (baseN - 1);
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.5, color: 0x74879e });
+        sp = new THREE.Sprite(mat);
+        ang = u * Math.PI * 2;
+        r = 2.5 + Math.cos(u * 3.1) * 0.5;
+        sp.position.set(Math.cos(ang) * r * 0.8, 2.15 + Math.sin(u * 2) * 0.16, Math.sin(ang) * r * 1.15);
+        s = 2.5 + Math.random() * 0.8;
+        sp.userData.puff = { kind: 'base', sx: s * 1.3, sy: s * 0.6, y0: sp.position.y, u: 0 };
+        g.add(sp);
+      }
+      for (i = 0; i < colN; i++) {
+        u = i / (colN - 1);
+        mat = new THREE.SpriteMaterial({
+          map: tex, transparent: true, depthWrite: false, opacity: 0.62,
+          color: u > 0.72 ? 0xffffff : 0xc6d6e9
+        });
+        sp = new THREE.Sprite(mat);
+        r = 1.5 * (1 - u * 0.55);
+        ang = i * 2.4;
+        sp.position.set(Math.cos(ang) * r * 0.85, 2.35 + u * 4.3, Math.sin(ang) * r);
+        s = 3.0 - u * 1.0 + Math.random() * 0.5;
+        sp.userData.puff = { kind: 'col', sx: s, sy: s * 0.95, y0: sp.position.y, u: u };
+        g.add(sp);
+      }
+      for (i = 0; i < anvilN; i++) {
+        u = i / (anvilN - 1);
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.3, color: 0xeef4ff });
+        sp = new THREE.Sprite(mat);
+        sp.position.set(0.6 + u * 4.8, 6.5 + Math.sin(u * 2.2) * 0.22, (u - 0.5) * 3.4);
+        s = 2.4 + u * 1.1;
+        sp.userData.puff = { kind: 'anvil', sx: s * 1.5, sy: s * 0.5, y0: sp.position.y, u: u };
+        g.add(sp);
+      }
+    } else {
+      /* 层状云：两层水平云毯 + 低空雨层云，边缘用大而淡的片铺开 */
+      var rows = [{ y: 3.55, w: 4.4, o: 0.24 }, { y: 4.4, w: 3.2, o: 0.18 }];
+      for (i = 0; i < 34; i++) {
+        var rr = rows[i % 2];
+        mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: rr.o, color: 0xd8e3f2 });
+        sp = new THREE.Sprite(mat);
+        sp.position.set(0.3 + (i / 34) * 9.8, rr.y + Math.random() * 0.3, -Z + 0.4 + Math.random() * (2 * Z - 0.8));
+        s = rr.w + Math.random() * 1.9;
+        sp.scale.set(s, s * 0.32, 1);
         sp.userData.baseY = sp.position.y;
         sp.userData.baseX = sp.position.x;
         sp.userData.ph = Math.random() * 6.28;
+        sp.userData.sx = s;
+        sp.userData.sy = s * 0.32;
+        g.add(sp);
       }
-      g.add(sp);
     }
     return g;
   }
@@ -323,23 +345,80 @@
     var clouds = { cumulo: cloudField('cumulo'), layer: cloudField('layer') };
     scene.add(clouds.cumulo); scene.add(clouds.layer);
 
-    var rainTex = global.H.makeSoftTexture('rain');
-    var rainCount = 900;
-    var rainPos = new Float32Array(rainCount * 3);
-    var rainState = [];
-    for (var r = 0; r < rainCount; r++) {
-      rainState.push({ x: 0, y: Math.random() * 6, z: -Z + Math.random() * 2 * Z, v: 12 + Math.random() * 8 });
-      rainPos[r * 3] = 0; rainPos[r * 3 + 1] = rainState[r].y; rainPos[r * 3 + 2] = rainState[r].z;
+    /* 降雨：线段粒子（每滴一条倾斜雨丝）+ 地面涟漪，比点精灵更像真雨 */
+    var RAIN_N = 820;
+    var rainSeg = new Float32Array(RAIN_N * 6);
+    var rainDrops = [];
+    for (var r = 0; r < RAIN_N; r++) {
+      rainDrops.push({
+        x: (Math.random() * 2 - 1) * 14, y: Math.random() * 6,
+        z: -Z + Math.random() * 2 * Z,
+        len: 0.45 + Math.random() * 0.65,
+        sp: 13 + Math.random() * 9,
+        k: 0.55 + Math.random() * 0.45
+      });
     }
     var rainGeo = new THREE.BufferGeometry();
-    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-    var rainMat = new THREE.PointsMaterial({
-      map: rainTex, color: 0xa8d4ff, size: 0.5, transparent: true, opacity: 0.8,
-      depthWrite: false, sizeAttenuation: true
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainSeg, 3));
+    var rainMat = new THREE.LineBasicMaterial({
+      color: 0xcde6ff, transparent: true, opacity: 0.55, depthWrite: false
     });
-    var rainPts = new THREE.Points(rainGeo, rainMat);
+    var rainPts = new THREE.LineSegments(rainGeo, rainMat);
+    rainPts.frustumCulled = false; /* 顶点每帧变化，包围球不可信 */
     rainPts.visible = false;
     scene.add(rainPts);
+
+    /* 雨区水汽：稀疏大颗粒雾点，让雨幕有体积感 */
+    var MIST_N = 130;
+    var mistPos = new Float32Array(MIST_N * 3);
+    var mistState = [];
+    for (var mi = 0; mi < MIST_N; mi++) {
+      mistState.push({ x: 0, y: Math.random() * 4.5, z: -Z + Math.random() * 2 * Z, v: 0.7 + Math.random() * 0.8 });
+    }
+    var mistGeo = new THREE.BufferGeometry();
+    mistGeo.setAttribute('position', new THREE.BufferAttribute(mistPos, 3));
+    var mistMat = new THREE.PointsMaterial({
+      map: global.H.makeSoftTexture('cloud'), color: 0x9ec4ea, size: 2.4,
+      transparent: true, opacity: 0.06, depthWrite: false, sizeAttenuation: true
+    });
+    var mistPts = new THREE.Points(mistGeo, mistMat);
+    mistPts.frustumCulled = false;
+    mistPts.visible = false;
+    scene.add(mistPts);
+
+    /* 地面涟漪（雨滴落地） */
+    function ringTexture() {
+      var c = document.createElement('canvas');
+      c.width = c.height = 64;
+      var g2 = c.getContext('2d');
+      g2.strokeStyle = 'rgba(190,225,255,0.9)';
+      g2.lineWidth = 4;
+      g2.beginPath();
+      g2.arc(32, 32, 24, 0, Math.PI * 2);
+      g2.stroke();
+      var t = new THREE.CanvasTexture(c);
+      return t;
+    }
+    var ringTex = ringTexture();
+    var SPLASH_N = 54;
+    var splashGroup = new THREE.Group();
+    splashGroup.rotation.x = -Math.PI / 2;
+    splashGroup.position.y = 0.03;
+    scene.add(splashGroup);
+    var splashes = [];
+    for (var sp2 = 0; sp2 < SPLASH_N; sp2++) {
+      var smat = new THREE.MeshBasicMaterial({
+        map: ringTex, transparent: true, opacity: 0, depthWrite: false, color: 0xbfe2ff
+      });
+      var smesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), smat);
+      smesh.frustumCulled = false;
+      smesh.visible = false;
+      splashGroup.add(smesh);
+      splashes.push({
+        mesh: smesh, mat: smat, ph: Math.random(),
+        x: (Math.random() * 2 - 1) * 10, z: -Z + Math.random() * 2 * Z
+      });
+    }
 
     var snowCount = 260;
     var snowPos = new Float32Array(snowCount * 3);
@@ -356,8 +435,18 @@
       map: global.H.makeSoftTexture('snow'), color: 0xffffff, size: 0.28,
       transparent: true, opacity: 0.9, depthWrite: false
     }));
+    snowPts.frustumCulled = false;
     snowPts.visible = false;
     scene.add(snowPts);
+
+    /* 云影：云下雨区在地面上压暗一片 */
+    var cloudShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 40),
+      new THREE.MeshBasicMaterial({ color: 0x03060d, transparent: true, opacity: 0.2, depthWrite: false })
+    );
+    cloudShadow.rotation.x = -Math.PI / 2;
+    cloudShadow.position.y = 0.015;
+    scene.add(cloudShadow);
 
     /* 观测站 */
     var station = makeStation();
@@ -424,9 +513,8 @@
         var len = Math.sqrt(dx * dx + dy * dy) || 1;
         a.scale.setScalar(Math.max(0.7, len / 4.6));
       });
-      labels.front.text = '';
-      labels.slope.text = meta.slopeText;
-      labels.cold.text = type === 'warm' ? '冷气团' : '冷气团';
+      global.H.setLabelText(labels.front, '锋面 · ' + meta.name, { color: '#ffffff', size: 40, scale: 1.0 });
+      global.H.setLabelText(labels.slope, meta.slopeText, { color: '#9fb8d8', size: 32, scale: 0.78 });
     }
 
     var views = {
@@ -510,49 +598,93 @@
         /* 云 */
         cloudSum = cur.cloud;
         var cumOn = type !== 'warm';
-        clouds.cumulo.visible = !!st.show.clouds && cumOn && cloudSum > 0.05;
-        clouds.layer.visible = !!st.show.clouds && (!cumOn || cloudSum > 0.05);
-        clouds.cumulo.position.x = xf - 1.4;
-        clouds.layer.position.x = xf + 1.5;
+        clouds.cumulo.visible = !!st.show.clouds && cumOn && cloudSum > 0.03;
+        clouds.layer.visible = !!st.show.clouds && (!cumOn || cloudSum > 0.03);
+        clouds.cumulo.position.x = xf - 1.2;
+        clouds.layer.position.x = xf + 1.6;
         clouds.cumulo.children.forEach(function (sp) {
-          var u = sp.userData.puff.u;
-          var grow = 0.55 + 0.45 * cloudSum;
-          sp.scale.set(sp.userData.puff.s * grow, sp.userData.puff.s * grow * 0.9, 1);
-          sp.material.opacity = 0.18 + 0.5 * cloudSum;
-          sp.position.y = 2.4 + u * 4.6 * (0.65 + 0.35 * cloudSum);
+          var pd = sp.userData.puff;
+          var grow = 0.55 + 0.45 * Math.min(1, cloudSum * 1.05);
+          sp.scale.set(pd.sx * grow, pd.sy * grow, 1);
+          if (pd.kind === 'col') sp.position.y = pd.y0 + (cloudSum - 0.35) * 0.7 * pd.u;
+          sp.material.opacity = (pd.kind === 'anvil' ? 0.16 : pd.kind === 'base' ? 0.34 : 0.42) * (0.45 + 0.55 * cloudSum);
         });
         clouds.layer.children.forEach(function (sp) {
-          sp.material.opacity = 0.1 + 0.32 * cloudSum;
+          sp.material.opacity = 0.08 + 0.26 * cloudSum;
+          sp.scale.set(sp.userData.sx * (0.7 + 0.3 * cloudSum), sp.userData.sy, 1);
           sp.position.y = sp.userData.baseY + Math.sin(time * 0.6 + sp.userData.ph) * 0.12;
         });
 
-        /* 雨/雪 */
+        /* 雨/雪：雨区与 2D 视图同一套数据（FRONT.span），冷锋在锋后、暖锋在锋前 */
         var rain = cur.rain;
         var isSnow = cur.temp < 1.5;
+        var rsp = FRONT.span(type, t, 'rain');
+        var rL = Math.max(-L, Math.min(L, rsp.x0));
+        var rR = Math.max(-L, Math.min(L, rsp.x1));
+        var bandW = Math.max(0.6, rR - rL);
+        var slant = type === 'cold' ? -0.42 : type === 'warm' ? -0.16 : -0.26;
         rainPts.visible = !!st.show.rain && rain > 0.02 && !isSnow;
         snowPts.visible = !!st.show.rain && rain > 0.02 && isSnow;
-        rainMat.opacity = Math.min(0.9, 0.25 + rain * 0.75);
+        mistPts.visible = !!st.show.rain && rain > 0.05 && !isSnow;
+        rainMat.opacity = Math.min(0.85, 0.2 + rain * 0.8);
+        cloudShadow.visible = !!st.show.clouds;
+        cloudShadow.position.x = (rL + rR) / 2;
+        cloudShadow.scale.set(bandW * 0.62 + 1.2, (bandW * 0.62 + 1.2) * 0.8, 1);
+        cloudShadow.material.opacity = 0.06 + 0.22 * rain;
         if (rainPts.visible) {
-          var rLeft = xf + meta.rainOffset - meta.rainHalf;
-          var rRight = xf + meta.rainOffset + meta.rainHalf;
-          var active = Math.floor(rainCount * Math.min(1, 0.25 + rain));
-          rainGeo.setDrawRange(0, active);
+          var active = Math.floor(RAIN_N * Math.min(1, 0.2 + rain * 0.9));
+          rainGeo.setDrawRange(0, active * 2);
           for (var q = 0; q < active; q++) {
-            var rs = rainState[q];
-            rs.y -= rs.v * dt;
+            var rs = rainDrops[q];
+            rs.y -= rs.sp * dt;
             if (rs.y < 0.05) {
-              rs.y = 4.6 + Math.random() * 2.4;
-              rs.x = rLeft + Math.random() * Math.max(0.2, rRight - rLeft);
+              rs.y = 6.2 + Math.random() * 1.4;
+              rs.x = rL + Math.random() * bandW;
             }
-            rainPos[q * 3] = rs.x - 0.12;
-            rainPos[q * 3 + 1] = rs.y;
-            rainPos[q * 3 + 2] = rs.z;
+            var len = rs.len;
+            rainSeg[q * 6] = rs.x;
+            rainSeg[q * 6 + 1] = rs.y;
+            rainSeg[q * 6 + 2] = rs.z;
+            rainSeg[q * 6 + 3] = rs.x + slant * len;
+            rainSeg[q * 6 + 4] = rs.y - len;
+            rainSeg[q * 6 + 5] = rs.z;
           }
           rainGeo.attributes.position.needsUpdate = true;
         }
+        if (mistPts.visible) {
+          for (var mq = 0; mq < MIST_N; mq++) {
+            var ms = mistState[mq];
+            ms.y -= ms.v * dt;
+            if (ms.y < 0.4) {
+              ms.y = 4.2 + Math.random() * 1.6;
+              ms.x = rL + Math.random() * bandW;
+            }
+            if (!ms.x) ms.x = rL + Math.random() * bandW;
+            mistPos[mq * 3] = ms.x;
+            mistPos[mq * 3 + 1] = ms.y;
+            mistPos[mq * 3 + 2] = ms.z;
+          }
+          mistGeo.attributes.position.needsUpdate = true;
+          mistMat.opacity = 0.03 + 0.07 * rain;
+        }
+        /* 地面涟漪：雨区边缘扩散的水圈 */
+        var splashOn = !!st.show.rain && rain > 0.06 && !isSnow;
+        for (var sq = 0; sq < SPLASH_N; sq++) {
+          var spl = splashes[sq];
+          if (!splashOn) { spl.mesh.visible = false; continue; }
+          spl.ph += dt * (1.3 + 0.9 * rain);
+          if (spl.ph >= 1) {
+            spl.ph = 0;
+            spl.x = rL + Math.random() * bandW;
+            spl.z = -Z + Math.random() * 2 * Z;
+          }
+          spl.mesh.visible = true;
+          var sc = 0.26 + spl.ph * 1.1;
+          spl.mesh.scale.set(sc, sc, 1);
+          spl.mesh.position.set(spl.x, -spl.z, 0);
+          spl.mat.opacity = (1 - spl.ph) * (0.22 + 0.45 * rain);
+        }
         if (snowPts.visible) {
-          var sLeft = xf + meta.rainOffset - meta.rainHalf;
-          var sRight = xf + meta.rainOffset + meta.rainHalf;
           var actS = Math.floor(snowCount * Math.min(1, 0.4 + rain));
           snowGeo.setDrawRange(0, actS);
           for (var w = 0; w < actS; w++) {
@@ -560,7 +692,7 @@
             ss.y -= ss.v * dt;
             if (ss.y < 0.05) {
               ss.y = 4.6 + Math.random() * 2;
-              ss.x = sLeft + Math.random() * Math.max(0.2, sRight - sLeft);
+              ss.x = rL + Math.random() * bandW;
             }
             snowPos[w * 3] = ss.x + Math.sin(time * 1.4 + ss.ph) * 0.25;
             snowPos[w * 3 + 1] = ss.y;
@@ -591,21 +723,15 @@
         labels.move.visible = showLabels;
         labels.slope.visible = showLabels;
 
-        /* 冷气团在移动方向后方 */
-        var behindX = type === 'warm' ? -L * 0.55 : xf - 7;
-        var aheadX = type === 'warm' ? xf + 6 : L * 0.55;
-        if (type === 'warm') { behindX = xf + 7; aheadX = -L * 0.5; }
-        labels.cold.position.set(behindX, 1.1, 0);
-        labels.warm.position.set(type === 'warm' ? -6 : Math.min(L * 0.72, xf + 6.5), type === 'warm' ? 2.4 : 1.0, 0);
-        labels.cold.text = '';
-        labels.cold.material.map = null;
-        /* 文字精灵内容固定，冷/暖标签位置随类型互换 */
-        var coldLabelText = type === 'warm' ? '冷气团' : '冷气团';
-        labels.cold.position.set(type === 'warm' ? xf + 7 : xf - 7, 1.1, 0);
-        labels.warm.position.set(type === 'warm' ? -7 : xf + 7, type === 'warm' ? 1.1 : 1.1, 0);
+        /* 冷/暖气团标签位置随类型互换：冷气团总在锋面后方（移动方向一侧） */
+        var left = -L * 0.88, right = L * 0.88;
+        var coldX = type === 'warm' ? Math.min(right, xf + 7.5) : Math.max(left, xf - 7.5);
+        var warmX = type === 'warm' ? Math.max(left, xf - 7.5) : Math.min(right, xf + 7.5);
+        labels.cold.position.set(coldX, 1.2, 0);
+        labels.warm.position.set(warmX, 1.2, 0);
         labels.front.position.set(xf - (type === 'warm' ? 1.6 : 2.2), (type === 'warm' ? 3.4 : 4.6), 0);
         labels.line.position.set(xf, 0.5, Z * 0.72);
-        labels.rain.position.set(xf + meta.rainOffset, 5.4, 0);
+        labels.rain.position.set((rL + rR) / 2, 5.2, 0);
         labels.station.position.set(0, 2.9, 0);
         labels.slope.position.set(xf - (type === 'warm' ? 6 : 5), 0.5, Z * 0.86);
         labels.move.position.set(type === 'warm' ? xf + 4 : xf - 4, 0.9, -Z * 0.78);
@@ -632,6 +758,10 @@
         renderer.dispose();
       }
     };
+    api.frameCount = 0;
+    var _frame = api.frame;
+    api.frame = function (st, dt) { api.frameCount++; _frame(st, dt); };
+    global.__M1 = api;
     return api;
   }
 

@@ -64,10 +64,18 @@
     };
   }
 
+  /* 兰勃特投影的 y 轴朝北（数学坐标），画布 y 朝下，需先取反再交给 makeProjector */
+  function lccNorthUp(phi1, phi2, lam0) {
+    var f = lcc(phi1, phi2, lam0);
+    return function (lon, lat) {
+      var p = f(lon, lat);
+      return { x: p.x, y: -p.y };
+    };
+  }
+
   /* 中国主图：经度 73~135，纬度 17~54（南海诸岛另作插图） */
   function chinaProjector(w, h, pad) {
-    var fwd = lcc(25, 47, 105);
-    return makeProjector(fwd, 73, 135, 17, 54, w, h, pad === undefined ? 10 : pad);
+    return makeProjector(lccNorthUp(25, 47, 105), 73, 135, 17, 54, w, h, pad === undefined ? 10 : pad);
   }
 
   /* 区域图（天气图底图）：等经纬，按中纬度压缩经度 */
@@ -148,7 +156,7 @@
     c2d.strokeStyle = 'rgba(150,180,230,0.4)';
     c2d.lineWidth = 0.8;
     c2d.strokeRect(ix, iy, iw, ih);
-    var inset = makeProjector(lcc(25, 47, 105), 106, 123, 2, 24, iw, ih, 4);
+    var inset = makeProjector(lccNorthUp(25, 47, 105), 106, 123, 2, 24, iw, ih, 4);
     c2d.translate(ix, iy);
     c2d.fillStyle = opts.land || '#0e1a2c';
     c2d.strokeStyle = opts.border || 'rgba(120,160,220,0.28)';
@@ -242,6 +250,7 @@
     CITIES: CITIES,
     lcc: lcc,
     makeProjector: makeProjector,
+    lccNorthUp: lccNorthUp,
     chinaProjector: chinaProjector,
     regionProjector: regionProjector,
     pathRings: pathRings,
