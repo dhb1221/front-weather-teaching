@@ -231,14 +231,33 @@
     c2d.strokeStyle = opts.border || 'rgba(120,160,220,0.2)';
     c2d.lineWidth = opts.borderWidth || 0.6;
     var bboxCheck = opts.filter;
+    /* 只画与可视纬度带相交的环：否则南极洲等极地多边形会被夹到图框底边，压成一条假海岸线 */
+    var latMin = opts.latMin === undefined ? -90 : opts.latMin;
+    var latMax = opts.latMax === undefined ? 90 : opts.latMax;
+    function ringsInView(rings) {
+      return (rings || []).filter(function (ring) {
+        if (!ring || ring.length < 3) return false;
+        var lo = 90, hi = -90;
+        for (var i = 0; i < ring.length; i++) {
+          var la = ring[i][1];
+          if (la < lo) lo = la;
+          if (la > hi) hi = la;
+        }
+        return hi >= latMin - 0.5 && lo <= latMax + 0.5;
+      });
+    }
     W.countries.forEach(function (ct) {
       if (bboxCheck && !bboxCheck(ct)) return;
-      pathRings(c2d, ct.rings, proj.project);
+      var rings = ringsInView(ct.rings);
+      if (!rings.length) return;
+      pathRings(c2d, rings, proj.project);
       c2d.fill();
     });
     W.countries.forEach(function (ct) {
       if (bboxCheck && !bboxCheck(ct)) return;
-      pathRings(c2d, ct.rings, proj.project);
+      var rings = ringsInView(ct.rings);
+      if (!rings.length) return;
+      pathRings(c2d, rings, proj.project);
       c2d.stroke();
     });
     c2d.restore();

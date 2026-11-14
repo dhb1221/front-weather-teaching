@@ -332,7 +332,7 @@
     if (F.types.indexOf(q.type) >= 0) state.type = q.type;
     if (q.t !== undefined && isFinite(parseFloat(q.t))) state.t = Math.max(0, Math.min(1, parseFloat(q.t)));
     if (q.m && /^M[1-6]$/.test(q.m)) state.model = q.m;
-    if (q.map && ['cyclone', 'rainbelt', 'symbols'].indexOf(q.map) >= 0) state.mapMode = q.map;
+    if (q.map && ['cyclone', 'rainbelt', 'symbols', 'world'].indexOf(q.map) >= 0) state.mapMode = q.map;
     if (q.month) state.month = Math.max(4, Math.min(9, parseInt(q.month, 10) || 6));
     if (q.view && ['iso', 'profile', 'top', 'cold', 'warm'].indexOf(q.view) >= 0) state.view = q.view;
   }
@@ -554,7 +554,9 @@
   }
 
   function renderLiveAll(data) {
-    el.liveTitle.innerHTML = '当前实况 · ' + (data.place && data.place.name ? data.place.name : '') +
+    var pName = (data.place && data.place.name) ? data.place.name : '';
+    var pProv = (data.place && (data.place.prov || data.place.provFull)) ? (data.place.prov || data.place.provFull) : '';
+    el.liveTitle.innerHTML = '当前实况 · ' + pName + (pProv ? ' · ' + pProv : '') +
       ' <span class="pill">' + data.source + '</span>';
     el.liveSource.textContent = data.source;
     var c = data.current || {};
@@ -724,9 +726,10 @@
     global.LIVE.searchCity(q).then(function (list) {
       if (!list.length) { el.searchResults.innerHTML = '<p class="dim">没有找到「' + q + '」，试试只输入城市名。</p>'; return; }
       el.searchResults.innerHTML = list.map(function (c, i) {
+        var where = [c.prov || c.admin1 || '', c.country || ''].filter(Boolean).join(' · ');
         return '<button class="sr-item" data-i="' + i + '">' + c.name +
-          '<small>' + [c.admin1, c.country].filter(Boolean).join(' · ') +
-          ' · ' + c.lon.toFixed(2) + ', ' + c.lat.toFixed(2) + '</small></button>';
+          '<small>' + (where ? where + ' · ' : '') +
+          c.lon.toFixed(2) + ', ' + c.lat.toFixed(2) + '</small></button>';
       }).join('');
       el.searchResults.querySelectorAll('.sr-item').forEach(function (b) {
         b.addEventListener('click', function () {
@@ -744,7 +747,12 @@
     if (!global.navigator || !global.navigator.geolocation) { toast('浏览器不支持定位，请手动搜索城市'); return; }
     toast('正在获取定位…');
     global.navigator.geolocation.getCurrentPosition(function (pos) {
-      liveLoad({ name: '我的位置', lat: pos.coords.latitude, lon: pos.coords.longitude });
+      var lat = pos.coords.latitude, lon = pos.coords.longitude;
+      var near = global.LIVE.nearestCity ? global.LIVE.nearestCity(lat, lon) : null;
+      var place = near
+        ? { name: near.name, prov: near.prov, provFull: near.provFull, lat: lat, lon: lon }
+        : { name: '我的位置', lat: lat, lon: lon };
+      liveLoad(place);
     }, function () {
       toast('定位被拒绝或不可用，请手动搜索城市');
     }, { timeout: 8000, maximumAge: 600000 });

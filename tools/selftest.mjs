@@ -67,6 +67,7 @@ const FILES = [
   'src/front-data.js',
   'src/geo-china.js',
   'src/geo-world.js',
+  'src/geo-cities.js',
   'src/geo.js',
   'src/knowledge.js',
   'src/quiz.js',
@@ -157,6 +158,37 @@ ok('GEO_WORLD 存在', !!GW);
 if (GW) ok('世界国家 ≥ 170', GW.countries.length >= 170, String(GW.countries.length));
 ok('GEO 工具集', !!(GEO && GEO.drawChina && GEO.drawWorld && GEO.chinaProjector && GEO.regionProjector));
 
+/* 城市索引：保证查询省份准确 */
+const CITIES = sandbox.GEO_CITIES;
+ok('GEO_CITIES 存在', Array.isArray(CITIES) && CITIES.length >= 300, String(CITIES && CITIES.length));
+if (Array.isArray(CITIES)) {
+  let bad = 0;
+  CITIES.forEach((c) => {
+    if (!c || !c.n || !c.p || typeof c.lon !== 'number' || typeof c.lat !== 'number') bad++;
+    else if (!(c.lon >= 73 && c.lon <= 136 && c.lat >= 3 && c.lat <= 54)) bad++;
+  });
+  ok('城市字段齐全且坐标在中国范围', bad === 0, bad + ' 条异常');
+  const find = (kw) => CITIES.filter((c) => c.s === kw || c.n === kw || c.n === kw + '市');
+  const ly = find('洛阳')[0], cd = find('成都')[0], gy = find('贵阳')[0], bj = find('北京')[0];
+  ok('洛阳属于河南', !!ly && ly.p === '河南省', ly && ly.p);
+  ok('成都属于四川', !!cd && cd.p === '四川省', cd && cd.p);
+  ok('贵阳属于贵州', !!gy && gy.p === '贵州省', gy && gy.p);
+  ok('直辖市北京可查', !!bj && bj.ps === '北京', bj && bj.ps);
+  ok('含港澳台城市', CITIES.some((c) => c.p === '香港特别行政区') &&
+    CITIES.some((c) => c.p === '澳门特别行政区') && CITIES.some((c) => c.p === '台湾省'));
+  // 本地搜索必须能命中正确省份（searchCity 返回 Promise，异步校验）
+  if (sandbox.LIVE) {
+    const hits = await sandbox.LIVE.searchCity('洛阳');
+    ok('搜索「洛阳」命中河南', hits.length > 0 && hits[0].prov === '河南',
+      hits.length ? hits.map((h) => h.name + '/' + (h.prov || h.admin1)).slice(0, 3).join(' , ') : '无结果');
+    const cds = await sandbox.LIVE.searchCity('成都');
+    ok('搜索「成都」命中四川', cds.length > 0 && cds[0].prov === '四川',
+      cds.length ? cds.map((h) => h.name + '/' + (h.prov || h.admin1)).slice(0, 3).join(' , ') : '无结果');
+    const near = sandbox.LIVE.nearestCity(26.65, 106.63);
+    ok('定位最近城市命中贵阳', !!near && near.name === '贵阳', near ? near.name + '/' + near.prov : 'null');
+  }
+}
+
 if (GEO) {
   try {
     const ctx = fakeCtx(1200, 700);
@@ -219,7 +251,7 @@ if (MODS.M2) {
 
 if (MODS.M3) {
   const bad = runDraws(MODS.M3, [[1200, 700], [390, 640]],
-    ['cyclone', 'rainbelt', 'symbols'].map((m) => ({ type: 'cold', mapMode: m, month: 6 })));
+    ['cyclone', 'rainbelt', 'symbols', 'world'].map((m) => ({ type: 'cold', mapMode: m, month: 6 })));
   ok('M3 三模式 × 两尺寸 无异常', bad.length === 0, bad.slice(0, 3).join(' | '));
   const bad2 = runDraws(MODS.M3, [[1100, 680]],
     [4, 5, 6, 7, 8, 9].map((m) => ({ type: 'cold', mapMode: 'rainbelt', month: m })));

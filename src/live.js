@@ -15,7 +15,7 @@
  *   因此这里用「今日已过时段（约 N 小时）的变化」作近似，并明确标注 N，不外推成 24h。
  *
  * API：window.LIVE = {
- *   PRESETS, searchCity(q), load(place), judge(data), demoType(judgeResult)
+ *   PRESETS, searchCity(q), nearestCity(lat,lon), load(place), judge(data), demoType(judgeResult)
  * }
  * ============================================================ */
 (function (global) {
@@ -24,13 +24,13 @@
   var TIMEOUT = 6500;
 
   var PRESETS = [
-    { name: '贵阳', lon: 106.63, lat: 26.65, elevation: 1100 },
-    { name: '北京', lon: 116.41, lat: 39.90, elevation: 44 },
-    { name: '上海', lon: 121.47, lat: 31.23, elevation: 4 },
-    { name: '广州', lon: 113.26, lat: 23.13, elevation: 21 },
-    { name: '武汉', lon: 114.31, lat: 30.59, elevation: 37 },
-    { name: '昆明', lon: 102.71, lat: 25.04, elevation: 1892 },
-    { name: '哈尔滨', lon: 126.53, lat: 45.80, elevation: 142 }
+    { name: '贵阳', prov: '贵州', provFull: '贵州省', lon: 106.63, lat: 26.65, elevation: 1100 },
+    { name: '北京', prov: '北京', provFull: '北京市', lon: 116.41, lat: 39.90, elevation: 44 },
+    { name: '上海', prov: '上海', provFull: '上海市', lon: 121.47, lat: 31.23, elevation: 4 },
+    { name: '广州', prov: '广东', provFull: '广东省', lon: 113.26, lat: 23.13, elevation: 21 },
+    { name: '武汉', prov: '湖北', provFull: '湖北省', lon: 114.31, lat: 30.59, elevation: 37 },
+    { name: '昆明', prov: '云南', provFull: '云南省', lon: 102.71, lat: 25.04, elevation: 1892 },
+    { name: '哈尔滨', prov: '黑龙江', provFull: '黑龙江省', lon: 126.53, lat: 45.80, elevation: 142 }
   ];
 
   function fetchJSON(url, timeout) {
@@ -64,24 +64,96 @@
   }
 
   /* ---------------- 1. 城市搜索 ---------------- */
+  /* 先查本地中国城市索引（准确、可离线），再退回在线地理编码并按人口/行政级别排序 */
+  function norm(s) {
+    return String(s || '').replace(/[\s　]/g, '')
+      .replace(/(特别行政区|自治区|自治州|地区|林区|省|市|盟|县|区)$/g, '');
+  }
+
+  function localSearch(q) {
+    var list = global.GEO_CITIES;
+    if (!list || !list.length) return [];
+    var nq = norm(q);
+    if (!nq) return [];
+    var hits = [];
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      var n = norm(c.n), ns = c.s;
+      var score = 0;
+      if (n === nq || ns === nq) score = 100;
+      else if (n.indexOf(nq) === 0 || ns.indexOf(nq) === 0) score = 80 - Math.min(20, n.length - nq.length);
+      else if (nq.length >= 2 && (n.indexOf(nq) > 0 || ns.indexOf(nq) > 0)) score = 50 - Math.min(15, n.length - nq.length);
+      if (!score) continue;
+      score += c.cap ? 6 : 0;
+      hits.push({ score: score, c: c });
+    }
+    hits.sort(function (a, b) { return b.score - a.score || a.c.length - b.c.length; });
+    return hits.slice(0, 8).map(function (h) {
+      var c = h.c;
+      return {
+        name: c.s,
+        prov: c.ps,
+        provFull: c.p,
+        country: '中国',
+        lon: c.lon,
+        lat: c.lat,
+        local: true
+      };
+    });
+  }
+
+  var FEATURE_RANK = { PPLC: 0, PPLA: 1, PPLA2: 2, PPLA3: 3, PPLA4: 4, PPL: 5 };
+
   function searchCity(q) {
     q = String(q || '').trim();
     if (!q) return Promise.resolve([]);
+    var local = localSearch(q);
+    if (local.length) return Promise.resolve(local);
     var url = 'https://geocoding-api.open-meteo.com/v1/search?name=' +
-      encodeURIComponent(q) + '&count=8&language=zh&format=json';
+      encodeURIComponent(q) + '&count=20&language=zh&format=json';
     return fetchJSON(url).then(function (d) {
-      var out = (d.results || []).map(function (r) {
+      var rows = (d.results || []).map(function (r) {
         return {
           name: r.name,
           admin1: r.admin1 || '',
+          prov: r.admin1 || '',
           country: r.country || '',
           lon: r.longitude,
           lat: r.latitude,
-          elevation: r.elevation
+          elevation: r.elevation,
+          rank: FEATURE_RANK[r.feature_code] === undefined ? (r.feature_code && r.feature_code.indexOf('PPL') === 0 ? 5 : 9) : FEATURE_RANK[r.feature_code],
+          pop: r.population || 0
         };
       });
-      return out;
+      rows.sort(function (a, b) { return a.rank - b.rank || b.pop - a.pop; });
+      // 同名但省份/国家不同的结果去重
+      var seen = {}, out = [];
+      rows.forEach(function (r) {
+        var k = r.name + '|' + (r.prov || r.country || '');
+        if (seen[k]) return;
+        seen[k] = 1;
+        out.push(r);
+      });
+      return out.slice(0, 8);
     });
+  }
+
+  /* 按坐标找最近的本土城市（定位时用于显示“省 · 市”） */
+  function nearestCity(lat, lon) {
+    var list = global.GEO_CITIES;
+    if (!list || !list.length || !isFinite(lat) || !isFinite(lon)) return null;
+    var k = Math.cos(lat * Math.PI / 180);
+    var best = null, bd = 1e9;
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      var dx = (c.lon - lon) * k, dy = c.lat - lat;
+      var d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = c; }
+    }
+    if (!best) return null;
+    // 超过约 80km 就不硬套城市名
+    if (Math.sqrt(bd) * 111 > 80) return null;
+    return { name: best.s, prov: best.ps, provFull: best.p, lon: best.lon, lat: best.lat, local: true, near: true };
   }
 
   /* ---------------- 2. wttr.in 解析 ---------------- */
@@ -375,6 +447,7 @@
     PRESETS: PRESETS,
     TIMEOUT: TIMEOUT,
     searchCity: searchCity,
+    nearestCity: nearestCity,
     load: load,
     judge: judge,
     demoType: demoType,

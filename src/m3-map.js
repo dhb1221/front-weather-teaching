@@ -456,6 +456,15 @@
         }
       };
     }
+    if (mode === 'world') {
+      return {
+        opts: {
+          lonMin: -180, lonMax: 180, latMin: -52, latMax: 78,
+          ocean: '#081120', land: '#17304f',
+          border: 'rgba(160,196,246,0.42)', borderWidth: 0.8
+        }
+      };
+    }
     return {
       opts: {
         lonMin: 100, lonMax: 140, latMin: 18, latMax: 50,
@@ -707,6 +716,20 @@
         note: '副热带高压北进则雨带北移、南退则雨带南压：4—5 月华南 → 6 月江淮梅雨 → 7—8 月华北东北 → 9 月南退，规律是“雨带随副高北进南退”。'
       };
     }
+    if (mode === 'world') {
+      return {
+        sub: '② 北半球中纬度是锋面气旋最活跃的地区',
+        title: 'M3 天气图 · 全球锋面气旋带',
+        legend: [
+          { k: 'hatch', c: 'rgba(255,180,130,0.55)', t: '中纬度锋面气旋活跃带' },
+          { k: 'dash', c: 'rgba(255,214,132,0.75)', t: '副热带高压带（30°N/30°S）' },
+          { k: 'dash', c: 'rgba(255,140,160,0.75)', t: '赤道低压带' },
+          { k: 'L', c: '#ff8f86', t: '示意性气旋（东侧暖锋）' },
+          { k: 'dot', c: 'rgba(255,120,110,0.95)', t: '中国' }
+        ],
+        note: '示意：中纬度极锋带是锋面气旋最活跃的地区；北半球气旋逆时针、南半球顺时针；冷锋在气旋西/西南侧、暖锋在东/东南侧。'
+      };
+    }
     if (mode === 'symbols') {
       return {
         sub: '③ 锋面符号判读 · 点击卡片',
@@ -725,13 +748,14 @@
       legend: [
         { k: 'poly', c: 'rgba(140,190,255,0.55)', t: '陆地 · 海岸线' },
         { k: 'line', c: 'rgba(120,170,255,0.75)', t: '等压线' },
+        { k: 'line', c: 'rgba(143,200,255,0.85)', t: '风（逆时针辐合）' },
         { k: 'L', c: '#ff8f86', t: '低压中心 L' },
         { k: 'tri', c: C.cold, t: '冷锋（三角）' },
         { k: 'semi', c: C.warmLine, t: '暖锋（半圆）' },
         { k: 'hatch', c: 'rgba(143,200,255,0.65)', t: '降水区' },
         { k: 'dash', c: C.route, t: '观测站过境路线 A→B→C' }
       ],
-      note: '东亚地面图（100°—140°E）：低压中心气流逆时针辐合上升，左侧冷锋、右侧暖锋；观测站自东南向西北过境 A（暖区）→ B（冷锋）→ C（冷气团）。'
+      note: '东亚地面图（100°—140°E）：北半球气旋逆时针辐合上升，冷锋位于气旋西南侧、暖锋位于东南侧；观测站自东南向西北过境 A（暖区）→ B（冷锋）→ C（冷气团）。'
     };
   }
 
@@ -779,6 +803,71 @@
   /* =================================================================
    * ① 锋面气旋
    * ================================================================= */
+
+  /* 文字避让布局：先占位（L/站点/图内小字），再依次给标注挑一个
+     不与已占矩形重叠的候选位置；可选细引线指向锚点。 */
+  function makePlacer(bounds) {
+    var rects = [];
+    function overlap(a, b, m) {
+      return !(a.x + a.w + m <= b.x || b.x + b.w + m <= a.x ||
+        a.y + a.h + m <= b.y || b.y + b.h + m <= a.y);
+    }
+    function boxOf(g, text, x, y, size, align, bold) {
+      setFont(g, size, bold);
+      var tw = textWidth(g, text);
+      var x0 = align === 'center' ? x - tw / 2 : (align === 'right' ? x - tw : x);
+      return { x: x0, y: y - size * 1.05, w: tw, h: size * 1.45 };
+    }
+    return {
+      reserve: function (x, y, w, h) { rects.push({ x: x, y: y, w: w, h: h }); },
+      place: function (g, text, anchor, size, color, opt) {
+        opt = opt || {};
+        var cands = opt.cands || [[0, -16], [0, 18], [18, 0], [-18, 0]];
+        var align = opt.align || 'center';
+        var bold = !!opt.bold;
+        var chosen = null, i, x, y, box;
+        for (i = 0; i < cands.length; i++) {
+          x = anchor.x + cands[i][0];
+          y = anchor.y + cands[i][1];
+          box = boxOf(g, text, x, y, size, align, bold);
+          /* 夹进绘图区，避免文字被画布边缘裁掉 */
+          if (bounds) {
+            var dx = 0, dy = 0;
+            if (box.x < bounds.x0) dx = bounds.x0 - box.x;
+            if (box.x + box.w > bounds.x1) dx = bounds.x1 - (box.x + box.w);
+            if (box.y < bounds.y0) dy = bounds.y0 - box.y;
+            if (box.y + box.h > bounds.y1) dy = bounds.y1 - (box.y + box.h);
+            if (dx || dy) { x += dx; y += dy; box = boxOf(g, text, x, y, size, align, bold); }
+          }
+          if (!rects.some(function (r) { return overlap(box, r, 2); })) {
+            chosen = { x: x, y: y, box: box };
+            break;
+          }
+        }
+        if (!chosen) {
+          x = anchor.x + cands[0][0];
+          y = anchor.y + cands[0][1];
+          box = boxOf(g, text, x, y, size, align, bold);
+          chosen = { x: x, y: y, box: box };
+        }
+        if (opt.leader) {
+          g.save();
+          g.setLineDash([]);
+          g.strokeStyle = opt.leaderColor || 'rgba(219,230,255,0.34)';
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(anchor.x, anchor.y);
+          g.lineTo(chosen.x, chosen.y - size * 0.35);
+          g.stroke();
+          g.restore();
+        }
+        haloText(g, text, chosen.x, chosen.y, color, size, align, bold);
+        rects.push(chosen.box);
+        return chosen;
+      }
+    };
+  }
+
   function drawCyclone(g, P, w, h, S, F, sc, cache) {
     var labelsOn = !(S.show && S.show.labels === false);
     var pw = Math.max(2, P.x1 - P.x0), ph = Math.max(2, P.y1 - P.y0);
@@ -831,7 +920,7 @@
       g.fill();
     }
 
-    /* 闭合等压线（越向外气压越高） */
+    /* 闭合等压线（越向外气压越高）；数值只留 3 个，稍后统一避让摆放 */
     var k, i, ang;
     for (k = 1; k <= 5; k++) {
       g.beginPath();
@@ -843,34 +932,21 @@
       g.strokeStyle = 'rgba(120,170,255,' + (k === 5 ? 0.40 : 0.28) + ')';
       g.lineWidth = k === 5 ? 1.6 : 1.1;
       g.stroke();
-      if (labelsOn) {
-        /* 数值标签沿西南→西北的弧线错开，避免内圈数值挤在一起 */
-        var q2 = isoPoint(k, 2.05 + k * 0.30);
-        haloText(g, String(996 + 4 * k), q2.x, q2.y,
-          'rgba(150,190,255,0.72)', 9.5 * sc, 'center', false);
-      }
     }
 
-    /* 北半球气旋：逆时针辐合的风向箭头（两圈） */
-    var ring, rings = [{ r: 0.60, n: 10, l: 0.21, al: 0.58 },
-    { r: 1.02, n: 8, l: 0.15, al: 0.34 }];
-    for (ring = 0; ring < rings.length; ring++) {
-      var rg = rings[ring];
-      for (i = 0; i < rg.n; i++) {
-        ang = i * TAU / rg.n + 0.32 + ring * 0.2;
-        var wx = cx + R * rg.r * Math.cos(ang);
-        var wy = cy + R * rg.r * Math.sin(ang) * 0.9;
-        /* 逆时针切向（画布 y 向下）+ 向内辐合 */
-        var tdx = Math.sin(ang), tdy = -Math.cos(ang);
-        var idx2 = -Math.cos(ang), idy = -Math.sin(ang);
-        var dx = tdx * 0.86 + idx2 * 0.42;
-        var dy = tdy * 0.86 + idy * 0.42;
-        var dl = Math.sqrt(dx * dx + dy * dy) || 1;
-        dx /= dl; dy /= dl;
-        var alen = R * rg.l;
-        drawArrow(g, wx, wy, wx + dx * alen, wy + dy * alen,
-          'rgba(143,200,255,' + rg.al + ')', 1.4 * sc, 5.2 * sc);
-      }
+    /* 北半球气旋：逆时针辐合的风向箭头（10 支、长度一致、清晰） */
+    var windN = 10, windR = R * 0.74, windL = R * 0.19;
+    for (i = 0; i < windN; i++) {
+      ang = i * TAU / windN + 0.26;
+      var wx = cx + windR * Math.cos(ang);
+      var wy = cy + windR * Math.sin(ang) * 0.92;
+      var tdx = Math.sin(ang), tdy = -Math.cos(ang);
+      var idx2 = -Math.cos(ang), idy = -Math.sin(ang);
+      var dx = tdx * 0.86 + idx2 * 0.50;
+      var dy = tdy * 0.86 + idy * 0.50;
+      var dl = Math.sqrt(dx * dx + dy * dy) || 1;
+      drawArrow(g, wx, wy, wx + dx / dl * windL, wy + dy / dl * windL,
+        'rgba(143,200,255,0.60)', 1.5 * sc, 5 * sc);
     }
 
     /* 锋线路径：真实经纬度 → 投影。冷锋向西南、暖锋向东南 */
@@ -892,40 +968,32 @@
     var rainWarm = offsetBand(warmPts, 1, R * 0.20);
     fillHatchPoly(g, rainWarm, 'rgba(143,200,255,0.15)', 'rgba(143,200,255,0.42)', 9 * sc, 1);
 
-    /* 锋线本体 + 符号 */
-    drawFront(g, coldPts, 'tri', C.cold, 2.6 * sc, 7.2 * sc, 1);
-    drawFront(g, warmPts, 'semi', C.warmLine, 2.6 * sc, 7.2 * sc, 1);
-
-    /* 海陆提示（很淡，不抢视线） */
-    var lAsia = pr(107, 43), lPac = pr(136, 44);
-    haloText(g, '亚欧大陆', lAsia.x, lAsia.y, 'rgba(200,215,245,0.32)', 10 * sc, 'center', false);
-    haloText(g, '太平洋', lPac.x, lPac.y, 'rgba(160,200,255,0.32)', 10 * sc, 'center', false);
+    /* 锋线本体 + 符号（加粗；符号凸向即锋面移动方向：冷锋东南、暖锋东北） */
+    drawFront(g, coldPts, 'tri', C.cold, 2.8 * sc, 7.4 * sc, 1);
+    drawFront(g, warmPts, 'semi', C.warmLine, 2.8 * sc, 7.4 * sc, 1);
 
     if (!labelsOn) { g.restore(); return; }
 
-    /* 低压中心：L 在上、说明文字移到 L 上方，避免与 B 站“过境时（冷锋）”重叠 */
-    haloText(g, 'L', cx, cy - 5 * sc, '#ff8f86', 26 * sc, 'center', true);
-    haloText(g, '低压中心 996 hPa', cx, cy - 38 * sc,
-      'rgba(255,180,170,0.94)', 10 * sc, 'center', false);
+    /* ---------------- 标注布局：先占位，再避让摆放 ---------------- */
+    var pl = makePlacer({ x0: 6 * sc, x1: pw - 6 * sc, y0: 6 * sc, y1: ph - 6 * sc });
 
-    /* 锋面名称 */
-    var iCold = pathInfo(coldPts), iWarm = pathInfo(warmPts);
-    var pc = pointAt(iCold, iCold.total * 0.62);
-    var nc = { x: pc.ty, y: -pc.tx };            /* 指向暖区一侧 */
-    haloText(g, '冷锋', pc.x - nc.x * (20 * sc), pc.y - nc.y * (20 * sc),
-      C.cold, 12.5 * sc, 'center', true);
-    var pw2 = pointAt(iWarm, iWarm.total * 0.66);
-    var nw = { x: pw2.ty, y: -pw2.tx };
-    haloText(g, '暖锋', pw2.x + nw.x * (19 * sc), pw2.y + nw.y * (19 * sc),
-      C.warmLine, 12.5 * sc, 'center', true);
+    /* 低压中心 L（先占位） */
+    haloText(g, 'L', cx, cy - 4 * sc, '#ff8f86', 26 * sc, 'center', true);
+    pl.reserve(cx - 11 * sc, cy - 22 * sc, 22 * sc, 28 * sc);
 
-    /* 降水区标签 */
-    var pc2 = pointAt(iCold, iCold.total * 0.42);
-    haloText(g, '降水区', pc2.x - nc.x * (R * 0.15), pc2.y - nc.y * (R * 0.15),
-      '#bfe0ff', 10 * sc, 'center', true);
-    var pw3 = pointAt(iWarm, iWarm.total * 0.5);
-    haloText(g, '降水区', pw3.x + nw.x * (R * 0.14), pw3.y + nw.y * (R * 0.14),
-      '#bfe0ff', 10 * sc, 'center', true);
+    /* 海陆示意小字：按投影放到真实位置（太平洋在日本以东洋面，不在陆地上） */
+    var mapLabels = [
+      ['亚欧大陆', 104, 45.5, 11 * sc, 'rgba(200,216,246,0.55)'],
+      ['中国东部', 114.5, 36.5, 10.5 * sc, 'rgba(200,216,246,0.50)'],
+      ['朝鲜半岛', 127.2, 38.4, 10 * sc, 'rgba(200,216,246,0.46)'],
+      ['日本', 138.4, 36.0, 10.5 * sc, 'rgba(200,216,246,0.50)'],
+      ['太平洋', 139.0, 29.5, 11 * sc, 'rgba(160,200,255,0.55)']
+    ];
+    for (i = 0; i < mapLabels.length; i++) {
+      var ml = mapLabels[i], mp = pr(ml[1], ml[2]);
+      pl.place(g, ml[0], { x: mp.x, y: mp.y }, ml[3], ml[4],
+        { cands: [[0, 0]], bold: false });
+    }
 
     /* 观测站过境路线 A→B→C：自东南（暖区）向西北（冷气团）穿过冷锋 */
     var routeGeo = [[130.5, 25.0], [118.7, 30.0], [110.5, 32.8]];
@@ -942,24 +1010,85 @@
     drawArrow(g, route[1].x, route[1].y, route[2].x, route[2].y, C.route, 1.5 * sc, 5.5 * sc);
 
     var names = ['A', 'B', 'C'];
-    var rlabels = ['过境前（暖区）', '过境时（冷锋）', '过境后（冷气团）'];
     for (i = 0; i < route.length; i++) {
       var rp = route[i];
       g.fillStyle = 'rgba(5,7,15,0.85)';
       g.beginPath();
-      g.arc(rp.x, rp.y, 7 * sc, 0, TAU);
+      g.arc(rp.x, rp.y, 7.5 * sc, 0, TAU);
       g.fill();
       g.strokeStyle = C.route;
       g.lineWidth = 1.6 * sc;
       g.stroke();
       haloText(g, names[i], rp.x, rp.y - 0.5 * sc, '#ffd6aa', 9 * sc, 'center', true);
+      pl.reserve(rp.x - 9 * sc, rp.y - 9 * sc, 18 * sc, 18 * sc);
     }
-    haloText(g, rlabels[0], route[0].x + 11 * sc, route[0].y + 6 * sc,
-      'rgba(255,214,170,0.95)', 10 * sc, 'left', true);
-    haloText(g, rlabels[1], route[1].x + 11 * sc, route[1].y - 10 * sc,
-      'rgba(255,214,170,0.95)', 10 * sc, 'left', true);
-    haloText(g, rlabels[2], route[2].x + 11 * sc, route[2].y - 12 * sc,
-      'rgba(255,214,170,0.95)', 10 * sc, 'left', true);
+
+    /* L 说明：在 L 上方，避让布局 */
+    pl.place(g, '低压中心 996 hPa', { x: cx, y: cy - 26 * sc }, 10 * sc,
+      'rgba(255,180,170,0.94)',
+      { cands: [[0, 0], [0, -16 * sc], [0, -32 * sc],
+        [-46 * sc, -8 * sc], [46 * sc, -8 * sc]] });
+
+    /* 冷锋 / 暖锋：标注离开锋线，细引线指回锋线 */
+    var iCold = pathInfo(coldPts), iWarm = pathInfo(warmPts);
+    var pc = pointAt(iCold, iCold.total * 0.58);
+    var nc = { x: pc.ty, y: -pc.tx };            /* 指向暖区（东南）一侧 */
+    var d1 = 26 * sc;
+    pl.place(g, '冷锋', { x: pc.x + nc.x * 8 * sc, y: pc.y + nc.y * 8 * sc },
+      12.5 * sc, C.cold, {
+        bold: true, leader: true, leaderColor: 'rgba(78,161,255,0.42)',
+        cands: [[nc.x * d1, nc.y * d1],
+          [nc.x * d1 + 26 * sc, nc.y * d1 - 16 * sc],
+          [nc.x * d1 - 26 * sc, nc.y * d1 + 16 * sc],
+          [nc.x * d1 + 12 * sc, nc.y * d1 + 22 * sc]]
+      });
+    var pw2 = pointAt(iWarm, iWarm.total * 0.62);
+    var nw = { x: pw2.ty, y: -pw2.tx };          /* 指向冷区（东北）一侧 */
+    pl.place(g, '暖锋', { x: pw2.x + nw.x * 8 * sc, y: pw2.y + nw.y * 8 * sc },
+      12.5 * sc, C.warmLine, {
+        bold: true, leader: true, leaderColor: 'rgba(255,122,107,0.42)',
+        cands: [[-nw.x * d1, -nw.y * d1],
+          [-nw.x * d1 + 26 * sc, -nw.y * d1 + 14 * sc],
+          [-nw.x * d1 - 26 * sc, -nw.y * d1 - 14 * sc],
+          [nw.x * d1, nw.y * d1]]
+      });
+
+    /* 降水区只保留 2 处：冷锋后、暖锋前，放在带内偏外侧，短引线指向带中心 */
+    var bc = bboxOf(rainCold), bcx = (bc.x0 + bc.x1) / 2, bcy = (bc.y0 + bc.y1) / 2;
+    pl.place(g, '降水区', { x: bcx - nc.x * 10 * sc, y: bcy - nc.y * 10 * sc },
+      9.5 * sc, '#bfe0ff', {
+        bold: true, leader: true, leaderColor: 'rgba(143,200,255,0.4)',
+        cands: [[0, 0], [-20 * sc, 8 * sc], [0, -18 * sc], [22 * sc, 8 * sc]]
+      });
+    var bw = bboxOf(rainWarm), bwx = (bw.x0 + bw.x1) / 2, bwy = (bw.y0 + bw.y1) / 2;
+    pl.place(g, '降水区', { x: bwx + nw.x * 10 * sc, y: bwy + nw.y * 10 * sc },
+      9.5 * sc, '#bfe0ff', {
+        bold: true, leader: true, leaderColor: 'rgba(143,200,255,0.4)',
+        cands: [[0, 0], [22 * sc, -8 * sc], [0, -18 * sc], [-22 * sc, -8 * sc]]
+      });
+
+    /* 三个观测站说明：避让摆放，彼此间距 ≥26px */
+    var rlabels = ['过境前（暖区）', '过境时（冷锋）', '过境后（冷气团）'];
+    pl.place(g, rlabels[0], route[0], 10 * sc, 'rgba(255,214,170,0.95)',
+      { align: 'left', bold: true,
+        cands: [[14 * sc, 12 * sc], [14 * sc, -14 * sc], [-16 * sc, 16 * sc], [14 * sc, 30 * sc]] });
+    pl.place(g, rlabels[1], route[1], 10 * sc, 'rgba(255,214,170,0.95)',
+      { align: 'left', bold: true,
+        cands: [[14 * sc, 16 * sc], [14 * sc, -18 * sc], [-16 * sc, 18 * sc], [14 * sc, 34 * sc]] });
+    pl.place(g, rlabels[2], route[2], 10 * sc, 'rgba(255,214,170,0.95)',
+      { align: 'left', bold: true,
+        cands: [[14 * sc, -14 * sc], [14 * sc, 14 * sc], [-16 * sc, -16 * sc], [14 * sc, -30 * sc]] });
+
+    /* 等压线数值只保留 3 个：1016(k5) / 1008(k3) / 1000(k1)，摆在西—西北空白处 */
+    var isoVals = [[5, 3.55], [3, 3.95], [1, 4.35]];
+    for (i = 0; i < isoVals.length; i++) {
+      var kk = isoVals[i][0], aa = isoVals[i][1];
+      var ip = isoPoint(kk, aa);
+      pl.place(g, String(996 + 4 * kk),
+        { x: ip.x + Math.cos(aa) * 12 * sc, y: ip.y + Math.sin(aa) * 12 * sc },
+        9.5 * sc, 'rgba(150,190,255,0.78)',
+        { cands: [[0, 0], [0, -14 * sc], [-18 * sc, 6 * sc], [18 * sc, 6 * sc]] });
+    }
 
     /* 指北针 */
     var nax = pw - 24 * sc, nay = 30 * sc;
@@ -968,7 +1097,6 @@
 
     g.restore();
   }
-
   /* =================================================================
    * ② 我国锋面雨带
    * ================================================================= */
@@ -1205,6 +1333,215 @@
   }
 
   /* =================================================================
+   * ④ 全球模式：中纬度锋面气旋带（示意）
+   * ================================================================= */
+  function drawWorldMode(g, P, w, h, S, F, sc, cache) {
+    var labelsOn = !(S.show && S.show.labels === false);
+    var pw = Math.max(2, P.x1 - P.x0), ph = Math.max(2, P.y1 - P.y0);
+    var base = ensureBase(g, cache, 'world', 0, pw, ph);
+
+    g.save();
+    g.translate(P.x0, P.y0);
+    g.beginPath();
+    g.rect(0, 0, pw, ph);
+    g.clip();
+
+    var proj = base.proj;
+    if (base.cv) {
+      g.drawImage(base.cv, 0, 0, pw, ph);
+    } else {
+      var r0 = paintBaseDirect(g, 'world', 0, pw, ph);
+      proj = r0.projector;
+    }
+    if (!proj) proj = localProj(-180, 180, -60, 80, pw, ph, 8);
+    function pr(lon, lat) { return proj.project(lon, lat); }
+
+    var i, t, pts, la, lo;
+
+    /* 经纬网 */
+    g.save();
+    g.strokeStyle = 'rgba(150,180,230,0.10)';
+    g.lineWidth = 1;
+    for (la = -60; la <= 80; la += 20) {
+      pts = [];
+      for (i = 0; i <= 24; i++) pts.push(pr(-180 + 360 * i / 24, la));
+      polyline(g, pts, false);
+    }
+    for (lo = -180; lo <= 180; lo += 60) {
+      pts = [];
+      for (i = 0; i <= 14; i++) pts.push(pr(lo, -60 + 140 * i / 14));
+      polyline(g, pts, false);
+    }
+    g.restore();
+
+    var pl = makePlacer({ x0: 6 * sc, x1: pw - 6 * sc, y0: 6 * sc, y1: ph - 6 * sc });
+
+    /* 中纬度锋面气旋活跃带（40°—60°N 极锋带） */
+    var yN60 = pr(0, 60).y, yN40 = pr(0, 40).y;
+    g.save();
+    g.fillStyle = 'rgba(255,170,120,0.10)';
+    g.fillRect(0, yN60, pw, yN40 - yN60);
+    g.setLineDash([6 * sc, 5 * sc]);
+    g.strokeStyle = 'rgba(255,180,130,0.55)';
+    g.lineWidth = 1.2 * sc;
+    g.beginPath(); g.moveTo(0, yN60); g.lineTo(pw, yN60); g.stroke();
+    g.beginPath(); g.moveTo(0, yN40); g.lineTo(pw, yN40); g.stroke();
+    g.restore();
+
+    /* 南半球 40°—60°S 极锋带（镜像，弱一些） */
+    var yS40 = pr(0, -40).y, yS60 = pr(0, -60).y;
+    g.save();
+    g.fillStyle = 'rgba(255,170,120,0.07)';
+    g.fillRect(0, yS40, pw, yS60 - yS40);
+    g.restore();
+
+    /* 副热带高压带 / 赤道低压带（虚线） */
+    function belt(lat, color, dash) {
+      g.save();
+      g.setLineDash(dash);
+      g.strokeStyle = color;
+      g.lineWidth = 1.1 * sc;
+      g.beginPath();
+      for (var j = 0; j <= 24; j++) {
+        var pp = pr(-180 + 360 * j / 24, lat);
+        if (j === 0) g.moveTo(pp.x, pp.y); else g.lineTo(pp.x, pp.y);
+      }
+      g.stroke();
+      g.restore();
+    }
+    belt(30, 'rgba(255,214,132,0.55)', [7 * sc, 5 * sc]);
+    belt(-30, 'rgba(255,214,132,0.55)', [7 * sc, 5 * sc]);
+    belt(0, 'rgba(255,120,150,0.45)', [3 * sc, 5 * sc]);
+
+    /* 示意性气旋：北半球 3 个（逆时针），南半球 1 个（顺时针） */
+    function miniCyclone(lon, lat, south) {
+      var c = pr(lon, lat);
+      var sxp = Math.abs(pr(lon + 1, lat).x - c.x) || 1;
+      var syp = Math.abs(pr(lon, lat + 1).y - c.y) || 1;
+      var rad = clamp(Math.min(sxp, syp) * 4.2, 12 * sc, 34 * sc);
+      var i2, tt, np;
+      /* 冷锋向西南（南半球向西北）；暖锋向东（南半球向东偏北） */
+      var coldEnd = south ? [lon - 5.5, lat + 4.8] : [lon - 5.5, lat - 4.8];
+      var warmEnd = south ? [lon + 7, lat + 3.6] : [lon + 7, lat - 3.0];
+      var cpt = [], wpt = [];
+      np = 5;
+      for (tt = 0; tt <= np; tt++) {
+        cpt.push(pr(lon + (coldEnd[0] - lon) * tt / np, lat + (coldEnd[1] - lat) * tt / np));
+        wpt.push(pr(lon + (warmEnd[0] - lon) * tt / np, lat + (warmEnd[1] - lat) * tt / np));
+      }
+      drawFront(g, cpt, 'tri', C.cold, 2 * sc, 5.4 * sc, south ? -1 : 1);
+      drawFront(g, wpt, 'semi', C.warmLine, 2 * sc, 5.4 * sc, south ? -1 : 1);
+
+      haloText(g, 'L', c.x, c.y + 3.5 * sc, '#ff8f86', 12 * sc, 'center', true);
+
+      /* 旋转方向小箭头：北半球逆时针、南半球顺时针 */
+      var ringR = rad * 0.82;
+      for (i2 = 0; i2 < 5; i2++) {
+        var aa = i2 * TAU / 5 + 0.3;
+        var ax = c.x + ringR * Math.cos(aa);
+        var ay = c.y + ringR * Math.sin(aa) * 0.9;
+        var tx, ty;
+        if (south) { tx = -Math.sin(aa); ty = Math.cos(aa) * 0.9; }
+        else { tx = Math.sin(aa); ty = -Math.cos(aa) * 0.9; }
+        drawArrow(g, ax, ay, ax + tx * rad * 0.45, ay + ty * rad * 0.45,
+          'rgba(143,200,255,0.62)', 1.1 * sc, 4.2 * sc);
+      }
+      return c;
+    }
+
+    var cyclones = [
+      { lon: 165, lat: 45, name: '北太平洋气旋', south: false },
+      { lon: -35, lat: 50, name: '北大西洋气旋', south: false },
+      { lon: 30, lat: 53, name: '欧亚大陆气旋', south: false },
+      { lon: -18, lat: -50, name: '南半球气旋', south: true }
+    ];
+    var cc = [];
+    for (i = 0; i < cyclones.length; i++) {
+      cc.push(miniCyclone(cyclones[i].lon, cyclones[i].lat, cyclones[i].south));
+      pl.reserve(cc[i].x - 14 * sc, cc[i].y - 14 * sc, 28 * sc, 28 * sc);
+    }
+
+    /* 中国位置（红点） */
+    var mapTopY = pr(0, 78).y, mapBotY = pr(0, -52).y;
+    var cn = pr(105, 35);
+    g.fillStyle = 'rgba(255,120,110,0.95)';
+    g.beginPath();
+    g.arc(cn.x, cn.y, 3.4 * sc, 0, TAU);
+    g.fill();
+    pl.reserve(cn.x - 8 * sc, cn.y - 8 * sc, 16 * sc, 16 * sc);
+
+    if (labelsOn) {
+      var yTop = mapTopY - 32 * sc;
+      var yBot = mapBotY + 26 * sc;
+      var narrow = pw < 640;
+
+      if (narrow) {
+        /* 窄屏（手机）：地图是宽扁条带，说明文字放到上下空白区，避免挤在地图里 */
+        if (yTop > 74 * sc) {
+          haloText(g, '北半球 40°—60°N：中纬度锋面气旋活跃带（极锋带）',
+            12 * sc, yTop, 'rgba(255,196,150,0.95)', 10.5 * sc, 'left', true);
+          haloText(g, '北半球气旋逆时针（①北太平洋 ②北大西洋 ③欧亚大陆）',
+            12 * sc, yTop + 17 * sc, 'rgba(219,230,255,0.82)', 9.5 * sc, 'left', false);
+        }
+        if (yBot < ph - 10 * sc) {
+          haloText(g, '南半球 40°—60°S：④ 气旋为顺时针',
+            12 * sc, yBot, 'rgba(190,215,255,0.90)', 10 * sc, 'left', true);
+        }
+        /* 手机上图幅太窄：气压带只靠颜色+图例说明，不再往带内塞字 */
+        /* 气旋用编号代替名称（名称已写在上方说明里） */
+        for (i = 0; i < cyclones.length; i++) {
+          var numTxt = ['①', '②', '③', '④'][i];
+          haloText(g, numTxt, cc[i].x - 21 * sc, cc[i].y + 4 * sc,
+            'rgba(255,225,205,0.95)', 10.5 * sc, 'center', true);
+        }
+        /* 中国：红点 + 极短标注，避免与其它文字重叠 */
+        haloText(g, '中国', cn.x + 6 * sc, cn.y - 8 * sc,
+          'rgba(255,180,170,0.95)', 8.5 * sc, 'left', true);
+      } else {
+        /* 宽屏：极锋带 / 气旋名称 / 气压带说明，都走避让布局 */
+        pl.place(g, '中纬度锋面气旋活跃带（极锋带）', pr(-100, 56), 10.5 * sc,
+          'rgba(255,196,150,0.95)', {
+            bold: true,
+            cands: [[0, 0], [0, 14 * sc], [0, -14 * sc], [0, 28 * sc]]
+          });
+        for (i = 0; i < cyclones.length; i++) {
+          pl.place(g, cyclones[i].name, cc[i], 9.5 * sc,
+            'rgba(210,230,255,0.90)', {
+              cands: [[0, -32 * sc], [0, 32 * sc], [44 * sc, -24 * sc],
+                [-48 * sc, -24 * sc], [0, -48 * sc]]
+            });
+        }
+        pl.place(g, '南半球气旋为顺时针', { x: cc[3].x + 20 * sc, y: cc[3].y + 30 * sc },
+          9.5 * sc, 'rgba(190,215,255,0.88)', {
+            align: 'left',
+            cands: [[0, 0], [0, -16 * sc], [0, 18 * sc], [-30 * sc, 26 * sc]]
+          });
+        pl.place(g, '副热带高压带（30°N）', pr(-168, 30.8), 9.5 * sc,
+          'rgba(255,214,132,0.92)', {
+            align: 'left',
+            cands: [[0, 0], [0, 14 * sc], [0, -14 * sc]]
+          });
+        pl.place(g, '副热带高压带（30°S）', pr(-168, -29.2), 9.5 * sc,
+          'rgba(255,214,132,0.92)', {
+            align: 'left',
+            cands: [[0, 0], [0, -14 * sc], [0, 14 * sc]]
+          });
+        pl.place(g, '赤道低压带', pr(-168, 0.6), 9.5 * sc,
+          'rgba(255,140,160,0.92)', {
+            align: 'left',
+            cands: [[0, 0], [0, 14 * sc], [0, -14 * sc]]
+          });
+        pl.place(g, '中国', { x: cn.x - 10 * sc, y: cn.y - 8 * sc }, 9.5 * sc,
+          'rgba(255,180,170,0.95)', {
+            bold: true, align: 'left',
+            cands: [[0, 0], [-12 * sc, 0], [0, -14 * sc], [12 * sc, -14 * sc]]
+          });
+      }
+    }
+    g.restore();
+  }
+
+  /* =================================================================
    * ③ 锋面符号判读卡
    * ================================================================= */
   function drawSymbolCard(g, box, type, selected, sc, F) {
@@ -1318,7 +1655,7 @@
       var S = state || {};
       var F = FRONT || global.FRONT;
       var mode = S.mapMode;
-      if (mode !== 'rainbelt' && mode !== 'symbols') mode = 'cyclone';
+      if (mode !== 'rainbelt' && mode !== 'symbols' && mode !== 'world') mode = 'cyclone';
       var sc = w < 820 ? 0.85 : 1;
       var info = modeInfo(mode, S, F);
 
@@ -1362,6 +1699,7 @@
       hits.length = 0;
       if (mode === 'rainbelt') drawRainbelt(c2d, P, w, h, S, F, sc, baseCache);
       else if (mode === 'symbols') drawSymbols(c2d, P, w, h, S, F, sc, sel, hits);
+      else if (mode === 'world') drawWorldMode(c2d, P, w, h, S, F, sc, baseCache);
       else drawCyclone(c2d, P, w, h, S, F, sc, baseCache);
       c2d.restore();
 
