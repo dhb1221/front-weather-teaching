@@ -165,14 +165,6 @@ input { font-family: inherit; }
   background: rgba(78, 161, 255, .22);
   border-color: rgba(78, 161, 255, .45);
 }
-.month-wrap {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding-left: 8px; margin-left: 2px;
-  border-left: 1px solid var(--line-soft);
-  font-size: 12px;
-}
-.month-wrap b { color: var(--accent); font-weight: 600; min-width: 34px; }
-.month-wrap input[type=range] { width: 86px; }
 
 /* 阶段徽标 */
 .phase-badge {
@@ -664,7 +656,7 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
   border-top: 1px solid var(--line-soft);
 }
 .sheet footer .primary { margin-left: auto; }
-#quizProgress, #promptHint { font-size: 11.5px; }
+#quizProgress { font-size: 11.5px; }
 
 .quiz-body { padding: 16px 20px; overflow-y: auto; }
 .q-text { margin: 0 0 14px; font-size: 14.5px; line-height: 1.8; }
@@ -706,17 +698,6 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
 .quiz-done { text-align: center; padding: 26px 10px; }
 .quiz-done h4 { margin: 0 0 8px; font-size: 18px; }
 .quiz-done p { margin: 0; color: var(--dim); font-size: 13px; line-height: 1.8; }
-
-.prompt-body { padding: 16px 20px; overflow-y: auto; }
-.prompt-body pre {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.8px;
-  line-height: 1.75;
-  color: rgba(219, 230, 255, .86);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 
 #foot {
   flex: 0 0 auto;
@@ -802,7 +783,7 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
 }
 .demo-row .chip:hover { border-color: rgba(78, 161, 255, 0.6); background: rgba(30, 52, 90, 0.8); }
 
-/* ================= ⑦ 锋面气旋演示：画布占满主区 ================= */
+/* ================= ⑥ 锋面气旋演示：画布占满主区 ================= */
 #main[data-model="M7"] { grid-template-columns: minmax(0, 1fr); }
 #main[data-model="M7"] #stage { grid-column: 1 / -1; }
 #main[data-model="M7"] #viewArea { height: calc(100vh - 190px); min-height: 380px; }
@@ -812,3 +793,63 @@ button.ghost:hover { border-color: rgba(78, 161, 255, .45); }
 #cycBar { align-items: center; }
 #cycBar > button { min-width: 62px; }
 .marks span:nth-child(4) { text-align: right; }
+
+/* ================= ⑦ 三维地球（geo-three 球面瓦片） ================= */
+#gl8 { z-index: 1; display: none; }
+
+/* 联网状态徽标：联网时可取实况；离线时教学核心仍可用 */
+.net-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: rgba(10, 18, 34, .62);
+  font-size: 11.5px; color: var(--dim);
+  white-space: nowrap;
+}
+.net-badge i {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #37d39b; box-shadow: 0 0 8px rgba(55, 211, 155, .8);
+}
+.net-badge.off i { background: #ffb454; box-shadow: 0 0 8px rgba(255, 180, 84, .7); }
+.net-badge.off b { color: #ffcf8a; }
+@media (max-width: 900px) {
+  .net-badge b { display: none; }
+  .net-badge { padding: 5px 8px; }
+}
+#main[data-model="M8"] { grid-template-columns: minmax(0, 1fr); }
+#main[data-model="M8"] #stage { grid-column: 1 / -1; }
+#main[data-model="M8"] #viewArea {
+  height: calc(100vh - 118px);
+  min-height: 420px;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(38, 92, 168, .20), transparent 60%),
+    radial-gradient(700px 500px at 50% 120%, rgba(20, 40, 90, .28), transparent 70%),
+    linear-gradient(180deg, #060b18 0%, #04060d 100%);
+}
+#globeInfo {
+  position: absolute; z-index: 5;
+  left: 12px; bottom: 12px;
+  max-width: 330px;
+  padding: 10px 13px 11px;
+  border-radius: 13px;
+  background: rgba(8, 13, 26, .78);
+  border: 1px solid var(--line-soft);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+#globeInfo h4 {
+  margin: 0 0 5px; font-size: 13px; letter-spacing: .05em; color: #cfe4ff;
+}
+#globeInfo p {
+  margin: 0 0 5px; font-size: 11px; line-height: 1.6; color: rgba(219, 230, 255, .78);
+}
+#globeInfo p.dim { margin: 0; font-size: 10.5px; line-height: 1.7; color: var(--dim); }
+@media (max-width: 900px) {
+  #main[data-model="M8"] #viewArea { height: calc(100vh - 205px); min-height: 380px; }
+  #globeInfo { left: 8px; right: 8px; bottom: 8px; max-width: none; padding: 9px 12px; }
+  #globeInfo p { font-size: 10.8px; }
+  #globeInfo p:not(.dim) { display: none; }
+  #globeInfo p.hide-sm { display: none; }
+  #globeInfo h4 { font-size: 12.5px; margin-bottom: 3px; }
+}
+

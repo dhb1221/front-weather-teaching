@@ -241,6 +241,10 @@
         if (phi !== undefined) goal.phi = phi;
         if (radius !== undefined) goal.radius = Math.max(minDist, Math.min(maxDist, radius));
       },
+      /* 自动旋转：在目标方位角上叠加增量（三维地球用） */
+      spin: function (dt, speed) {
+        goal.theta += (speed === undefined ? 0.05 : speed) * (dt || 0.016);
+      },
       /* 直接给一个目标机位（世界坐标） */
       setView: function (px, py, pz) {
         var v = new THREE.Vector3(px, py, pz).sub(target);

@@ -63,57 +63,95 @@
     return g;
   }
 
-  /* 把 canvas 绘制的锋面符号排成一排，贴在地面上（沿 z 方向铺开） */
-  function buildSymbolStrip(type) {
-    var pad = 3;
-    var cell = 96;
+  /* 锋面符号纹理：底边贴着锋线，尖端 / 凸出朝上（贴到地面后指向 +x，即移动方向） */
+  function makeSymbolTexture(shape, color) {
+    var W = 96, Hh = 192;
     var c = document.createElement('canvas');
-    c.width = cell; c.height = cell * 2;
+    c.width = W; c.height = Hh;
     var g = c.getContext('2d');
-    var groups = new THREE.Group();
+    var base = Hh - 6;
+    g.fillStyle = color;
+    g.strokeStyle = 'rgba(245,250,255,0.9)';
+    g.lineWidth = 2.5;
+    g.lineJoin = 'round';
+    if (shape === 'triangle') {
+      g.beginPath();
+      g.moveTo(W * 0.06, base);
+      g.lineTo(W * 0.94, base);
+      g.lineTo(W * 0.5, Hh * 0.05);
+      g.closePath();
+    } else {
+      g.beginPath();
+      g.moveTo(W * 0.06, base);
+      g.arc(W * 0.5, base, W * 0.44, Math.PI, 0, false);
+      g.closePath();
+    }
+    g.fill();
+    g.stroke();
+    var tex = new THREE.CanvasTexture(c);
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
+  }
+
+  /* 把锋面符号平铺在地面上（不再竖立朝向相机）：
+     底边贴锋线，冷锋三角 / 暖锋半圆指向移动方向 +x；准静止锋三角与半圆分列锋线两侧。 */
+  function buildSymbolStrip(type) {
+    var group = new THREE.Group();
+    /* PlaneGeometry 先平躺，再绕 y 轴转 -90°，让“纹理上方”对应世界 +x */
+    var geo = new THREE.PlaneGeometry(1.05, 2.1);
+    geo.rotateX(-Math.PI / 2);
+    geo.rotateY(-Math.PI / 2);
+
+    var coldColor = '#7dc0ff', warmColor = '#ff9a8a', statColor = '#d3b0ff';
+    var triTex = null, semiTex = null;
+    if (type === 'cold') triTex = makeSymbolTexture('triangle', coldColor);
+    else if (type === 'warm') semiTex = makeSymbolTexture('semicircle', warmColor);
+    else {
+      triTex = makeSymbolTexture('triangle', statColor);
+      semiTex = makeSymbolTexture('semicircle', statColor);
+    }
+    function matFor(tex) {
+      return new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide
+      });
+    }
+    var triMat = triTex ? matFor(triTex) : null;
+    var semiMat = semiTex ? matFor(semiTex) : null;
+
     for (var i = 0; i < 9; i++) {
       var z = -Z + 1.6 + i * (2 * Z - 3.2) / 8;
-      g.clearRect(0, 0, c.width, c.height);
-      var color = type === 'cold' ? '#7dc0ff' : type === 'warm' ? '#ff9a8a' : '#d3b0ff';
-      g.fillStyle = color;
-      g.strokeStyle = color;
-      if (type === 'cold') {
-        g.beginPath();
-        g.moveTo(cell * 0.12, cell * 2 - pad);
-        g.lineTo(cell * 0.88, cell * 2 - pad);
-        g.lineTo(cell * 0.5, cell * 0.28);
-        g.closePath();
-        g.fill();
-      } else if (type === 'warm') {
-        g.beginPath();
-        g.arc(cell * 0.5, cell * 2 - pad, cell * 0.38, Math.PI, 0, false);
-        g.closePath();
-        g.fill();
-      } else {
-        if (i % 2 === 0) {
-          g.beginPath();
-          g.moveTo(cell * 0.1, cell * 2 - pad);
-          g.lineTo(cell * 0.9, cell * 2 - pad);
-          g.lineTo(cell * 0.5, cell * 0.3);
-          g.closePath();
-          g.fill();
+      var mesh;
+      if (type === 'warm' || (type === 'stationary' && i % 2 === 1)) {
+        /* 半圆：底边在锋线上，凸出方向指向 +x（准静止锋画在 -x 一侧、凸向 -x） */
+        mesh = new THREE.Mesh(geo, semiMat);
+        if (type === 'warm') {
+          mesh.position.set(1.05, 0.05, z);
         } else {
-          g.beginPath();
-          g.arc(cell * 0.5, cell * 2 - pad, cell * 0.4, Math.PI, 0, false);
-          g.closePath();
-          g.fill();
+          mesh.position.set(-1.05, 0.05, z);
+          mesh.rotation.y = Math.PI;
         }
+      } else {
+        /* 三角：底边在锋线上，尖端指向 +x */
+        mesh = new THREE.Mesh(geo, triMat);
+        mesh.position.set(1.05, 0.05, z);
       }
-      var tex = new THREE.CanvasTexture(c);
-      tex.minFilter = THREE.LinearFilter;
-      var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.95 });
-      var sp = new THREE.Sprite(mat);
-      sp.scale.set(1.05, 2.1, 1);
-      sp.position.set(0.55, 0.06, z);
-      sp.userData.isSymbol = true;
-      groups.add(sp);
+      mesh.renderOrder = 4;
+      mesh.userData.isSymbol = true;
+      group.add(mesh);
     }
-    return groups;
+    return group;
+  }
+
+  /* 切换锋面时释放旧符号的几何体与纹理 */
+  function disposeSymbolStrip(strip) {
+    if (!strip) return;
+    strip.traverse(function (o) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        if (o.material.map) o.material.map.dispose();
+        o.material.dispose();
+      }
+    });
   }
 
   function cloudField(kind) {
@@ -499,6 +537,7 @@
       var meta = global.FRONT.meta[type];
       surfaceMesh.material.color.set(type === 'warm' ? 0xffbf9f : type === 'cold' ? 0x9fc4ff : 0xd0b6ff);
       frontGroup.remove(symbolStrip);
+      disposeSymbolStrip(symbolStrip);
       symbolStrip = buildSymbolStrip(type);
       frontGroup.add(symbolStrip);
       /* 爬升箭头按类型调整 */

@@ -6,6 +6,12 @@
  *   3) 2D 模型：M2 / M3 / M4 在假 canvas 上跑全组合不抛异常（含真实底图）
  *   4) 题库：≥30 题、每题 4 选项、答案与解析齐全、抽题按类型加权
  *   5) 知识库：≥12 节、术语 ≥12、HTML 只用了允许的标签/类
+ *   6) 实况数据层 live.js：WMO 中文映射、风向方位、冷/暖/准静止锋判读、
+ *      省名离线映射、load() 双源竞速（成功/单源降级/双源失败，全部用桩 fetch 不联网）
+ *   7) 三维地球数据层 live-globe.js：8 城、批量响应按坐标配对、数值映射、
+ *      8 分钟缓存、批量+单点双失败报错、buildLayer 依赖守卫
+ *   8) 三维地球瓦片 m8-globe.js：window.M8_TILE 离线瓦片 drawTile 在假 canvas 上
+ *      画 z0–z3 瓦片、OfflineProvider 层级与缓存（WebGL/THREE 部分不做单测）
  * 退出码 0 = 全过。
  * ============================================================ */
 import fs from 'node:fs';
@@ -52,6 +58,9 @@ const sandbox = {
   setTimeout, clearTimeout, Date, Math, JSON, Promise, performance: { now: () => Date.now() },
   navigator: { userAgent: 'selftest' },
   location: { search: '' },
+  /* 默认禁止真实联网：任何漏网的 fetch 立即失败，保证自检离线可跑。
+   * 需要网络行为的用例在各自小节里用桩 mockFetch() 覆盖本属性。 */
+  fetch(url) { return Promise.reject(new Error('selftest 禁止真实联网：' + url)); },
   addEventListener() {}, removeEventListener() {},
   document: {
     createElement: () => ({ getContext: () => fakeCtx(), style: {}, appendChild() {}, addEventListener() {} }),
@@ -73,9 +82,9 @@ const FILES = [
   'src/quiz.js',
   'src/helpers.js',
   'src/m2-section.js',
-  'src/m3-map.js',
   'src/m4-chart.js',
   'src/m7-cyclone.js',
+  'src/field.js',
   'src/live.js'
 ];
 
@@ -219,7 +228,7 @@ if (GEO) {
 /* ---------- 3. 2D 模型 ---------- */
 section('2D 模型（假 canvas 全组合）');
 const MODS = sandbox.MODELS || {};
-ok('MODELS.M2 / M3 / M4 均已注册', !!(MODS.M2 && MODS.M3 && MODS.M4));
+ok('MODELS.M2 / M4 均已注册', !!(MODS.M2 && MODS.M4));
 
 function runDraws(which, sizes, combos) {
   const bad = [];
@@ -248,15 +257,6 @@ function runDraws(which, sizes, combos) {
 if (MODS.M2) {
   const bad = runDraws(MODS.M2, [[1200, 700], [390, 640]], ['cold', 'warm', 'stationary'].map((t) => ({ type: t })));
   ok('M2 三锋 × 两尺寸 × 五时刻 无异常', bad.length === 0, bad.slice(0, 3).join(' | '));
-}
-
-if (MODS.M3) {
-  const bad = runDraws(MODS.M3, [[1200, 700], [390, 640]],
-    ['cyclone', 'rainbelt', 'symbols', 'world'].map((m) => ({ type: 'cold', mapMode: m, month: 6 })));
-  ok('M3 三模式 × 两尺寸 无异常', bad.length === 0, bad.slice(0, 3).join(' | '));
-  const bad2 = runDraws(MODS.M3, [[1100, 680]],
-    [4, 5, 6, 7, 8, 9].map((m) => ({ type: 'cold', mapMode: 'rainbelt', month: m })));
-  ok('M3 雨带 4–9 月 无异常', bad2.length === 0, bad2.slice(0, 3).join(' | '));
 }
 
 if (MODS.M4) {
@@ -352,6 +352,433 @@ if (K) {
   ok('类名只用约定的 kc-*', badCls.length === 0, badCls.join(','));
   ok('正文总字数 ≥ 4000', (allHtml.replace(/<[^>]+>/g, '')).length >= 4000,
     String((allHtml.replace(/<[^>]+>/g, '')).length));
+}
+
+/* ============================================================
+ * 6. 实况数据层 live.js（全部用桩 fetch，离线可跑、不联网）
+ * ============================================================ */
+section('实况数据层 live.js');
+const LIVE = sandbox.LIVE;
+
+/* 桩 fetch：handler 收到 url；返回值会被包成 Promise；handler 抛错 = 请求失败 */
+function mockFetch(handler) {
+  sandbox.fetch = (url, opt) => Promise.resolve().then(() => handler(url, opt));
+}
+function jsonRes(obj) {
+  return {
+    ok: true, status: 200,
+    text: () => Promise.resolve(JSON.stringify(obj)),
+    json: () => Promise.resolve(obj)
+  };
+}
+
+ok('window.LIVE API 完整（PRESETS/REFRESH_MS/weatherText/searchCity/load/judge 等）',
+  !!(LIVE && LIVE.PRESETS && LIVE.WEATHER_CODES && LIVE.weatherText && LIVE.searchCity &&
+    LIVE.nearestCity && LIVE.load && LIVE.judge && LIVE.demoType && LIVE.degToDir));
+if (LIVE) {
+  ok('REFRESH_MS = 300000（5 分钟自动刷新）且 TIMEOUT = 8000',
+    LIVE.REFRESH_MS === 300000 && LIVE.TIMEOUT === 8000,
+    LIVE.REFRESH_MS + ' / ' + LIVE.TIMEOUT);
+  ok('WMO 天气码 → 中文（晴 / 阴 / 雾凇 / 阵雨 / 雷暴）',
+    LIVE.weatherText(0) === '晴' && LIVE.weatherText(3) === '阴' &&
+    LIVE.weatherText(48) === '雾凇（冻雾）' && LIVE.weatherText(81) === '阵雨' &&
+    LIVE.weatherText(95) === '雷暴');
+  ok('风向角度 → 8 方位中文（北/东北/东/南/西）',
+    LIVE.degToDir(0) === '北' && LIVE.degToDir(45) === '东北' && LIVE.degToDir(90) === '东' &&
+    LIVE.degToDir(180) === '南' && LIVE.degToDir(270) === '西');
+
+  /* ---- 锋面判读：构造数据覆盖冷锋/暖锋/准静止锋/静稳/缺数据/数值模式 ---- */
+  function judgeData(dT, dP, extra) {
+    extra = extra || {};
+    return {
+      current: Object.assign({
+        windDir: '北', windDeg: 0, windSpeed: 10, press: 1015, cloud: 40, precip: 0
+      }, extra.current || {}),
+      metrics: Object.assign({
+        dT: dT, dP: dP, hours: 8,
+        text: '今日已过约 8 小时（非 24h 实测）', forecastBased: false
+      }, extra.metrics || {}),
+      hourly: extra.hourly || []
+    };
+  }
+  const rainy = [{ precip: 0.6 }, { precip: 1.2 }, { precip: 0.4 }, { precip: 0 }];
+  const coldJ = LIVE.judge(judgeData(-6, 5, { current: { press: 1020, cloud: 85, precip: 3.2 } }));
+  ok('judge 冷锋：ΔT ≤ −4℃ 且 ΔP ≥ +3hPa → cold',
+    coldJ.type === 'cold' && /冷锋/.test(coldJ.title) && LIVE.demoType(coldJ) === 'cold',
+    coldJ.type + ' / ' + coldJ.title);
+  const warmJ = LIVE.judge(judgeData(5, -5, { hourly: rainy }));
+  ok('judge 暖锋：ΔT ≥ +3℃ 且 ΔP ≤ −3hPa → warm',
+    warmJ.type === 'warm' && /暖锋/.test(warmJ.title), warmJ.type + ' / ' + warmJ.title);
+  const stJ = LIVE.judge(judgeData(0.6, 0.8, { hourly: rainy }));
+  ok('judge 准静止锋：ΔT/ΔP 小且降水时段多 → stationary',
+    stJ.type === 'stationary' && stJ.confidence === 'medium', stJ.type + ' / ' + stJ.confidence);
+  const calmJ = LIVE.judge(judgeData(0.6, 0.8, { hourly: [] }));
+  ok('judge 静稳：ΔT/ΔP 小且无降水 → none（天气平稳）',
+    calmJ.type === 'none' && /平稳/.test(calmJ.title), calmJ.type + ' / ' + calmJ.title);
+  const noTrend = LIVE.judge({ current: {}, metrics: { dT: null, dP: null } });
+  ok('judge 缺少 ΔT/ΔP 时给出「无法判定」说明（不硬判）',
+    noTrend.type === 'none' && /无法判定/.test(noTrend.reasons.join('')), noTrend.type);
+  const fcJ = LIVE.judge(judgeData(-6, 5, { metrics: { forecastBased: true } }));
+  ok('judge 数值模式数据自动降置信度并注明来源性质',
+    fcJ.type === 'cold' && fcJ.confidence === 'low' && /数值模式/.test(fcJ.reasons.join('')),
+    fcJ.confidence);
+
+  /* ---- 搜索：省名 → 省会（纯本地 GEO_CITIES，不联网） ---- */
+  const provHits = await LIVE.searchCity('浙江');
+  ok('搜索省名「浙江」→ 省会杭州（离线省名映射）',
+    provHits.length === 1 && provHits[0].name === '杭州' && provHits[0].prov === '浙江' &&
+    provHits[0].viaProvince === '浙江' && provHits[0].local === true,
+    JSON.stringify(provHits.slice(0, 1)));
+  const provHits2 = await LIVE.searchCity('广西壮族自治区');
+  ok('搜索自治区全称「广西壮族自治区」→ 首府南宁（离线）',
+    provHits2.length === 1 && provHits2[0].name === '南宁' && provHits2[0].prov === '广西',
+    JSON.stringify(provHits2.slice(0, 1)));
+
+  /* ---- load()：双源竞速（成功 / 单源降级 / 双源失败），全部走桩 fetch ---- */
+  mockFetch(() => { throw new Error('模拟断网'); });
+  let netErr = null;
+  try { await LIVE.load({ name: '贵阳', lon: 106.63, lat: 26.65 }); } catch (e) { netErr = e; }
+  ok('load() 双源都失败 → reject 明确错误（含两源名，不伪造数据）',
+    !!netErr && /实时天气获取失败/.test(netErr.message) &&
+    /Open-Meteo/.test(netErr.message) && /MET Norway/.test(netErr.message) &&
+    /模拟断网/.test(netErr.message), netErr && netErr.message);
+
+  const missErr = await LIVE.load({ name: '某地' }).then(() => null, (e) => e);
+  ok('load() 缺经纬度 → 直接 reject（不发请求）',
+    !!missErr && /经纬度缺失/.test(missErr.message), missErr && missErr.message);
+
+  const openFixture = {
+    latitude: 26.65, longitude: 106.63, elevation: 1100,
+    current: {
+      time: '2026-11-21T08:00', interval: 900,
+      temperature_2m: 21.5, relative_humidity_2m: 66, apparent_temperature: 21.9,
+      surface_pressure: 884.1, pressure_msl: 1013.2,
+      wind_speed_10m: 12.3, wind_direction_10m: 225, wind_gusts_10m: 20,
+      precipitation: 0, rain: 0, showers: 0, snowfall: 0, weather_code: 0,
+      cloud_cover: 12, visibility: 20000, dew_point_2m: 14.5
+    },
+    daily: {
+      time: ['2026-11-21'],
+      temperature_2m_max: [24.1], temperature_2m_min: [12.0],
+      uv_index_max: [4.2], precipitation_sum: [0]
+    },
+    hourly: {
+      time: ['2026-11-21T00:00', '2026-11-21T04:00', '2026-11-21T08:00'],
+      temperature_2m: [18.0, 19.2, 21.5],
+      surface_pressure: [886.0, 885.0, 884.1],
+      pressure_msl: [1018.0, 1016.0, 1013.2],
+      precipitation: [0, 0, 0],
+      cloud_cover: [5, 8, 12],
+      weather_code: [0, 0, 0],
+      wind_speed_10m: [5, 8, 12.3],
+      uv_index: [0, 0.4, 1.2]
+    }
+  };
+  mockFetch((url) => {
+    if (/met\.no/.test(url)) throw new Error('MET Norway 模拟不可用');
+    if (/api\.open-meteo\.com\/v1\/forecast/.test(url)) return jsonRes(openFixture);
+    throw new Error('未预期的 URL: ' + url);
+  });
+  let openData = null, openLoadErr = null;
+  try {
+    openData = await LIVE.load({ name: '贵阳', prov: '贵州', provFull: '贵州省', lon: 106.63, lat: 26.65, elevation: 1100 });
+  } catch (e) { openLoadErr = e; }
+  ok('load() Open-Meteo 成功：来源/温度/气压/天气/风向/判读齐备',
+    !!openData && openData.source === 'Open-Meteo 数值模式' &&
+    openData.current.temp === 21.5 && openData.current.press === 1013.2 &&
+    openData.current.desc === '晴' && openData.current.visibility === 20 &&
+    openData.current.windDir === '西南' && openData.place.name === '贵阳' &&
+    !!openData.judge && openData.judge.type === 'warm',
+    openLoadErr ? openLoadErr.message : (openData && JSON.stringify({
+      temp: openData.current.temp, press: openData.current.press,
+      vis: openData.current.visibility, judge: openData.judge.type
+    })));
+  ok('load() Open-Meteo 趋势：今日已过 8h、ΔT +3.5℃、ΔP −4.8hPa、标注数值模式',
+    !!openData && openData.metrics.dT === 3.5 && openData.metrics.dP === -4.8 &&
+    openData.metrics.hours === 8 && /今日已过约 8 小时/.test(openData.metrics.text) &&
+    openData.metrics.forecastBased === true &&
+    /数值模式/.test(openData.warnings.join('')));
+  ok('load() 成功结果带 judge（与 judge() 判据一致：暖锋）',
+    !!openData && LIVE.demoType(openData.judge) === 'warm');
+
+  const metFixture = (() => {
+    const base = Date.now() + 20 * 60000;
+    const iso = (min) => new Date(base + min * 60000).toISOString();
+    const det = (temp, press) => ({
+      instant: {
+        details: {
+          air_temperature: temp, air_pressure_at_sea_level: press,
+          relative_humidity: 60, wind_speed: 5, wind_from_direction: 270,
+          cloud_area_fraction: 90
+        }
+      },
+      next_1_hours: { summary: { symbol_code: 'rain' }, details: { precipitation_amount: 1.2 } }
+    });
+    return {
+      properties: {
+        meta: { updated_at: iso(0) },
+        timeseries: [
+          { time: iso(0), data: det(10, 1005.5) },
+          { time: iso(60), data: det(11, 1004) },
+          { time: iso(360), data: det(12, 1003) },
+          { time: iso(600), data: det(13, 1002) }
+        ]
+      },
+      geometry: { coordinates: [106.63, 26.65, 1100] }
+    };
+  })();
+  mockFetch((url) => {
+    if (/api\.open-meteo\.com\/v1\/forecast/.test(url)) throw new Error('Open-Meteo 模拟不可用');
+    if (/met\.no/.test(url)) return jsonRes(metFixture);
+    throw new Error('未预期的 URL: ' + url);
+  });
+  let metData = null, metLoadErr = null;
+  try { metData = await LIVE.load({ name: '贵阳', lon: 106.63, lat: 26.65 }); } catch (e) { metLoadErr = e; }
+  ok('load() Open-Meteo 失败时由 MET Norway 备源接管并标注降级',
+    !!metData && metData.source === 'MET Norway' &&
+    metData.current.temp === 10 && metData.current.press === 1005.5 &&
+    metData.current.windSpeed === 18 && metData.current.windDir === '西' &&
+    metData.current.desc === '雨' && metData.metrics.forecastBased === true &&
+    /降级/.test(metData.warnings.join('')) &&
+    !!metData.judge && metData.judge.type === 'warm',
+    metLoadErr ? metLoadErr.message : (metData && JSON.stringify({
+      source: metData.source, temp: metData.current.temp,
+      wind: metData.current.windSpeed, judge: metData.judge.type
+    })));
+}
+
+/* ============================================================
+ * 7. 三维地球数据层 live-globe.js（桩 fetch，不联网）
+ * ============================================================ */
+section('三维地球数据层 live-globe.js');
+try {
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/live-globe.js'), 'utf8'), sandbox,
+    { filename: 'src/live-globe.js' });
+  ok('加载 src/live-globe.js', true);
+} catch (e) {
+  ok('加载 src/live-globe.js', false, e.message);
+}
+const GL = sandbox.GLOBE_LIVE;
+ok('window.GLOBE_LIVE API 完整（CITIES/fetchAll/buildLayer/descOf/clearCache）',
+  !!(GL && Array.isArray(GL.CITIES) && GL.fetchAll && GL.buildLayer && GL.descOf && GL.clearCache));
+
+if (GL && Array.isArray(GL.CITIES)) {
+  const cityNames = GL.CITIES.map((c) => c.name);
+  ok('CITIES = 8 个全球城市且名称唯一（含北京/伦敦/纽约）',
+    GL.CITIES.length === 8 && new Set(cityNames).size === 8 &&
+    cityNames.includes('北京') && cityNames.includes('伦敦') && cityNames.includes('纽约'),
+    cityNames.join('/'));
+  const badCity = GL.CITIES.filter((c) => !c || !c.name || typeof c.lat !== 'number' ||
+    typeof c.lon !== 'number' || !(c.lat >= -90 && c.lat <= 90) || !(c.lon >= -180 && c.lon <= 180));
+  const west = GL.CITIES.some((c) => c.lon < 0);
+  ok('CITIES 经纬度合法且覆盖东/西经（伦敦/纽约在西经）', badCity.length === 0 && west &&
+    GL.CITIES.find((c) => c.name === '纽约').lon < -70,
+    badCity.length + ' 条异常 / west=' + west);
+  ok('descOf：WMO 码 → 中文（0 晴 / 95 雷暴），未知码兜底、空值给 —',
+    GL.descOf(0) === '晴' && GL.descOf(95) === '雷暴' &&
+    GL.descOf(null) === '—' && /其它天气/.test(GL.descOf(1234)),
+    GL.descOf(1234));
+
+  /* ---- 批量响应：故意乱序 + 坐标网格吸附偏移，验证按坐标就近配对 ---- */
+  function globeBatchFixture() {
+    const temps = [10.5, 11.5, 12.5, 13.5, 14.5, 15.5, 16.5, 17.5];
+    const codes = [0, 1, 2, 3, 45, 61, 71, 95];
+    const rows = [];
+    GL.CITIES.forEach((c, i) => {
+      rows.push({
+        latitude: c.lat + 0.03, longitude: c.lon + 0.03, elevation: 10,
+        current: {
+          time: '2026-11-21T08:00',
+          temperature_2m: temps[i], weather_code: codes[i],
+          wind_speed_10m: 5 + i, wind_direction_10m: i * 45,
+          surface_pressure: 1010 + i
+        }
+      });
+    });
+    return rows.reverse();   /* 响应顺序与 CITIES 相反 */
+  }
+  GL.clearCache();
+  let batchCalls = 0;
+  mockFetch((url) => {
+    if (!/api\.open-meteo\.com\/v1\/forecast/.test(url)) throw new Error('未预期 URL: ' + url);
+    batchCalls++;
+    if (!/latitude=39\.9,31\.23/.test(url)) throw new Error('批量 URL 未按城市顺序拼接坐标: ' + url);
+    if (!/timezone=UTC/.test(url) || !/wind_speed_unit=kmh/.test(url)) {
+      throw new Error('批量 URL 缺少 timezone/wind_speed_unit: ' + url);
+    }
+    return jsonRes(globeBatchFixture());
+  });
+  let batchData = null, batchErr = null;
+  try { batchData = await GL.fetchAll(true); } catch (e) { batchErr = e; }
+  ok('fetchAll 批量请求：返回 source=Open-Meteo 的 8 城数据',
+    !!batchData && batchData.source === 'Open-Meteo' && batchData.items.length === 8,
+    batchErr ? batchErr.message : (batchData && batchData.items.length));
+  ok('fetchAll 按坐标就近配对城市（乱序响应不串城）',
+    !!batchData && batchData.items[0].name === '北京' && batchData.items[3].name === '东京' &&
+    batchData.items[7].name === '纽约',
+    batchData ? batchData.items.map((it) => it.name).join('/') : '');
+  ok('fetchAll 数值映射：温度/风/风向/气压/天气/时间（含 UTC 补 Z）',
+    !!batchData &&
+    batchData.items[0].temp === 10.5 && batchData.items[0].wind === 5 &&
+    batchData.items[0].windDeg === 0 && batchData.items[0].press === 1010 &&
+    batchData.items[0].desc === '晴' && batchData.items[0].time === '2026-11-21T08:00Z' &&
+    batchData.items[7].temp === 17.5 && batchData.items[7].press === 1017 &&
+    batchData.items[7].desc === '雷暴',
+    batchData ? JSON.stringify({ t0: batchData.items[0].temp, t7: batchData.items[7].temp,
+      time0: batchData.items[0].time, desc7: batchData.items[7].desc }) : '');
+
+  const callsAfterFirst = batchCalls;
+  const cachedData = await GL.fetchAll();
+  ok('fetchAll 8 分钟内存缓存：5 分钟内不重复请求',
+    cachedData === batchData && batchCalls === callsAfterFirst, 'calls=' + batchCalls);
+  await GL.fetchAll(true);
+  ok('fetchAll(true) 强制刷新会跳过缓存重新请求',
+    batchCalls === callsAfterFirst + 1, 'calls=' + batchCalls);
+
+  GL.clearCache();
+  mockFetch(() => { throw new Error('模拟断网'); });
+  const gErr = await GL.fetchAll(true).then(() => null, (e) => e);
+  ok('fetchAll 批量与 8 个单点都失败 → reject 说明两条链路（不伪造数据）',
+    !!gErr && /批量请求/.test(gErr.message) && /单点请求/.test(gErr.message) &&
+    /模拟断网/.test(gErr.message), gErr && gErr.message);
+
+  let layerErr = null;
+  try { GL.buildLayer({}); } catch (e) { layerErr = e; }
+  ok('buildLayer 缺 THREE 时抛明确错误（依赖守卫，不静默失败）',
+    !!layerErr && /缺少 THREE/.test(layerErr.message), layerErr && layerErr.message);
+  let layerErr2 = null;
+  try { GL.buildLayer({ THREE: {}, group: { add() {} } }); } catch (e) { layerErr2 = e; }
+  ok('buildLayer 缺 toVec 时抛明确错误（依赖守卫）',
+    !!layerErr2 && /toVec/.test(layerErr2.message), layerErr2 && layerErr2.message);
+}
+
+/* ============================================================
+ * 8. 三维地球瓦片 m8-globe.js（只测不依赖 THREE/WebGL 的离线瓦片部分）
+ * ============================================================ */
+section('三维地球瓦片 m8-globe.js');
+/* 注入最小 Geo 桩：m8-globe 在加载时执行 class OfflineProvider extends Geo.MapProvider，
+ * 但不初始化 THREE/WebGL；瓦片绘制只用 document.createElement('canvas') + 地理数据。 */
+sandbox.Geo = { MapProvider: function MapProvider() {} };
+try {
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/m8-globe.js'), 'utf8'), sandbox,
+    { filename: 'src/m8-globe.js' });
+  ok('加载 src/m8-globe.js（Geo 桩，无需 THREE/WebGL）', true);
+} catch (e) {
+  ok('加载 src/m8-globe.js（Geo 桩，无需 THREE/WebGL）', false, e.message);
+}
+const M8T = sandbox.M8_TILE;
+ok('window.M8_TILE = {drawTile, offlineProvider}',
+  !!(M8T && typeof M8T.drawTile === 'function' && typeof M8T.offlineProvider === 'function'));
+
+if (M8T && typeof M8T.drawTile === 'function') {
+  /* 覆盖全球的瓦片坐标：z0 一张全球 + z2 全 16 张 + z3 西北/东南角 */
+  const tileCoords = [[0, 0, 0]];
+  for (let gx = 0; gx < 4; gx++) for (let gy = 0; gy < 4; gy++) tileCoords.push([2, gx, gy]);
+  tileCoords.push([3, 0, 0], [3, 7, 7]);
+  const badTiles = [];
+  for (const [z, x, y] of tileCoords) {
+    try {
+      const cv = M8T.drawTile(z, x, y);
+      if (!cv || cv.width !== 256 || cv.height !== 256) badTiles.push(z + '/' + x + '/' + y + ' 尺寸异常');
+    } catch (e) { badTiles.push(z + '/' + x + '/' + y + ' ' + e.message); }
+  }
+  ok('drawTile：z0 全球 + z2 全部 16 张 + z3 角瓦片共 ' + tileCoords.length + ' 张，256×256 且不抛异常',
+    badTiles.length === 0, badTiles.slice(0, 3).join(' | '));
+
+  const provider = new M8T.offlineProvider();
+  ok('offlineProvider：name=offline-natural-earth、LOD 层级 0–3、继承 Geo.MapProvider',
+    provider.name === 'offline-natural-earth' && provider.minZoom === 0 && provider.maxZoom === 3 &&
+    typeof provider.fetchTile === 'function' && provider instanceof sandbox.Geo.MapProvider);
+  const tileA = await provider.fetchTile(0, 0, 0);
+  const tileB = await provider.fetchTile(0, 0, 0);
+  ok('offlineProvider.fetchTile 异步返回 256px 瓦片且命中缓存',
+    !!tileA && tileA.width === 256 && tileA.height === 256 && tileA === tileB);
+}
+ok('M8 WebGL 场景未做单测（沙箱无 THREE，MODELS.M8 未注册），仅覆盖离线瓦片绘制',
+  typeof (sandbox.MODELS || {}).M8 === 'undefined');
+
+/* ---------- 实时模式场（field.js）：只测导出与纯函数形状，真实取数见 tools/field-test.mjs ---------- */
+section('实时模式场 field.js');
+const FIELD = sandbox.FIELD;
+ok('window.FIELD = {REGIONS, get, derive, clearCache}',
+  !!(FIELD && FIELD.REGIONS && typeof FIELD.get === 'function' &&
+    typeof FIELD.derive === 'function' && typeof FIELD.clearCache === 'function'));
+ok('REGIONS 含 eastAsia / north / global 且步长合法',
+  !!(FIELD && FIELD.REGIONS.eastAsia && FIELD.REGIONS.north && FIELD.REGIONS.global &&
+    FIELD.REGIONS.eastAsia.step > 0 && FIELD.REGIONS.north.step > 0 &&
+    FIELD.REGIONS.global.step === 15 && FIELD.REGIONS.global.latMin === -75 && FIELD.REGIONS.global.latMax === 75 &&
+    FIELD.REGIONS.global.lonMin === -180 && FIELD.REGIONS.global.lonMax === 165));
+ok('全球网格点数 = 11×24 = 264（省额度：15° 步长）',
+  FIELD && FIELD.REGIONS.global &&
+  ((FIELD.REGIONS.global.latMax - FIELD.REGIONS.global.latMin) / FIELD.REGIONS.global.step + 1) === 11 &&
+  ((FIELD.REGIONS.global.lonMax - FIELD.REGIONS.global.lonMin) / FIELD.REGIONS.global.step + 1) === 24);
+
+if (FIELD && typeof FIELD.derive === 'function') {
+  /* 合成网格：经向温差 + 中间气压槽，elev 全 0（不触发海拔屏蔽） */
+  const lats = [], lons = [];
+  for (let la = 20; la <= 40; la += 2) lats.push(la);
+  for (let lo = 100; lo <= 130; lo += 2) lons.push(lo);
+  const mk = () => lats.map(() => lons.map(() => null));
+  const temp = mk(), press = mk(), precip = mk(), u = mk(), v = mk(), elev = mk();
+  for (let i = 0; i < lats.length; i++) {
+    for (let j = 0; j < lons.length; j++) {
+      temp[i][j] = 20 - (lats[i] - 20) * 1.2;
+      press[i][j] = 1016 - Math.abs(lons[j] - 115) * 0.6;
+      precip[i][j] = 0; u[i][j] = 10; v[i][j] = -5; elev[i][j] = 50;
+    }
+  }
+  let d = null, err = '';
+  try { d = FIELD.derive({ lats, lons, step: 2, temp, press, precip, u, v, elev }); }
+  catch (e) { err = e.message; }
+  ok('derive() 合成场不抛异常且返回 {lows, fronts, isobars, levels}',
+    !!d && Array.isArray(d.lows) && Array.isArray(d.fronts) &&
+    Array.isArray(d.isobars) && Array.isArray(d.levels), err);
+  const allPts = [];
+  if (d) {
+    for (const f of d.fronts) for (const p of f.pts) allPts.push(p);
+    for (const is of d.isobars) for (const p of is.pts) allPts.push(p);
+    for (const lo of d.lows) allPts.push([lo.lat, lo.lon]);
+  }
+  ok('derive() 输出坐标全部有限且落在网格范围内（' + allPts.length + ' 个点）',
+    allPts.length > 0 && allPts.every(([la, lo]) =>
+      isFinite(la) && isFinite(lo) && la >= 19 && la <= 41 && lo >= 99 && lo <= 131));
+}
+
+/* 15° 全球网格（⑦ 三维地球实际使用的规格）：等压线能生成且坐标合法 */
+if (FIELD && typeof FIELD.derive === 'function' && FIELD.REGIONS.global) {
+  const G = FIELD.REGIONS.global;
+  const lats = [], lons = [];
+  for (let la = G.latMin; la <= G.latMax; la += G.step) lats.push(la);
+  for (let lo = G.lonMin; lo <= G.lonMax; lo += G.step) lons.push(lo);
+  const mk = () => lats.map(() => lons.map(() => null));
+  const temp = mk(), press = mk(), precip = mk(), u = mk(), v = mk(), elev = mk();
+  for (let i = 0; i < lats.length; i++) {
+    for (let j = 0; j < lons.length; j++) {
+      temp[i][j] = 28 - Math.abs(lats[i]) * 0.45;
+      press[i][j] = 1014 + Math.cos(lats[i] * Math.PI / 180) * 8 - Math.sin(lons[j] * Math.PI / 90) * 12;
+      precip[i][j] = 0; u[i][j] = 6; v[i][j] = -3; elev[i][j] = 0;
+    }
+  }
+  let dg = null, gerr = '';
+  try { dg = FIELD.derive({ lats, lons, step: G.step, temp, press, precip, u, v, elev }); }
+  catch (e) { gerr = e.message; }
+  const gPts = [];
+  if (dg) for (const is of dg.isobars) for (const p of is.pts) gPts.push(p);
+  ok('15° 全球网格：等压线非空（' + (dg ? dg.isobars.length : 0) + ' 条 / ' + gPts.length + ' 点）',
+    !!dg && dg.isobars.length > 0 && gPts.length > 0 && dg.levels.length > 0, gerr);
+  ok('15° 全球网格：等压线坐标有限且在经纬度范围内',
+    gPts.length > 0 && gPts.every(([la, lo]) =>
+      isFinite(la) && isFinite(lo) && la >= -75.01 && la <= 75.01 && lo >= -180.01 && lo <= 165.01));
+}
+
+/* 页面接线：三维地球等压线开关 + field.js 脚本 + 已删除天气图 */
+{
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  ok('index.html 引入 src/field.js', /<script src="src\/field\.js"><\/script>/.test(html));
+  ok('index.html 含等压线开关（data-gtoggle="isobars"）', /data-gtoggle="isobars"/.test(html));
+  ok('index.html 不再包含天气图（③）与旧的实时天气图芯片',
+    !/data-map=/.test(html) && !/data-model="M3"/.test(html) && !html.includes('m3-map.js'));
+  ok('index.html 未混用 °C（统一 ℃）', !/°C/.test(html));
 }
 
 /* ---------- 汇总 ---------- */

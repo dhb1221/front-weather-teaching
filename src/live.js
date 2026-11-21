@@ -1,27 +1,45 @@
 /* ============================================================
  * live.js — M6「实况天气」数据层：联网取数 + 锋面判读
  *
- * 数据链（逐级降级，任意一级失败自动下一级，全程不伪造数据）：
- *   1) 地理编码：https://geocoding-api.open-meteo.com/v1/search （中文城市名→经纬度/海拔）
- *   2) 实况主力：https://wttr.in/{lat},{lon}?format=j1&lang=zh
- *        含 current_condition（气温/体感/气压/湿度/风/云量/能见度/UV/降水/露点）
- *        + weather[3 天] 的 3 小时粒度 hourly（可用于“今日以来”变化）
- *   3) 备选：https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=&lon=
- *        含 air_temperature / air_pressure_at_sea_level / 湿度 / 风 / 云量 / 1h 降水
- *   4) 全部失败 → 由 app.js 显示离线教学示例，并允许手动输入观测值
+ * 数据链（两个实况来源并行请求，先成功者胜；都失败才明确报错，全程不伪造数据）：
+ *   1) 地理编码：https://geocoding-api.open-meteo.com/v1/search
+ *        中文城市名 → 经纬度/海拔（本地 GEO_CITIES 优先，命中即离线返回）
+ *   2) 实况来源（并行竞速，先返回且解析成功者胜，页面标注本次实际来源）：
+ *      A. https://api.open-meteo.com/v1/forecast
+ *         Open-Meteo Forecast API（免密钥、全球、CORS）：
+ *         current + daily（今日高/低、UV、降水合计）+ hourly（过去 24h + 未来 12h）；
+ *         timezone=auto：返回的是**站点当地时区**的时间字符串，utc_offset_seconds 给出偏移
+ *      B. https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=&lon=
+ *         MET Norway（免密钥、CORS=*）：温度℃ / 海平面气压 hPa / 风速 m/s / 云量 % /
+ *         1h 降水 mm / 天气符号 / meta.updated_at。浏览器里禁止自定义 User-Agent，直接 fetch。
+ *   3) 两个来源都失败 → reject(new Error(明确原因))，由 app.js 显示离线教学示例，
+ *      并允许手动输入观测值；绝不编造数值。
  *
- * 说明（重要，页面会原样展示）：
- *   权威教材判据用“24 小时气温/气压变化”，但公开免费数据源无法取到昨天同刻的实测，
- *   因此这里用「今日已过时段（约 N 小时）的变化」作近似，并明确标注 N，不外推成 24h。
+ * 数据性质（重要，页面会原样展示）：
+ *   Open-Meteo 与 MET Norway 都是**数值模式**数据（模式网格插值/预报），不是气象站实测。
+ *   因此 metrics.forecastBased = true，warnings 里明确写“非气象站实测/数值模式”。
+ *
+ * 气压口径：统一用**海平面气压** pressure_msl（与教材等压线图、气象台发布值一致；
+ *   MET Norway 的 air_pressure_at_sea_level 也是海平面气压）。模式地面气压另存
+ *   current.pressSurface / hourly[].pressSurface，只作参考，不参与 ΔP 判读。
+ *
+ * ΔT/ΔP 说明：教材判据用“24 小时气温/气压变化”，但公开免费源拿不到昨日同刻实测；
+ *   这里用「今日 0:00（或最早可用点）的逐时模式值 → 当前」近似，并注明真实小时数
+ *   （metrics.hours），metrics.text 写明“今日已过约 N 小时（非 24h 实测）”，不冒充 24h。
+ *   备源 MET Norway 不含过去逐时数据，只能用“未来约 9 小时预报变化”代替，并明确标注。
+ *
+ * 自动刷新：window.LIVE.REFRESH_MS = 300000（5 分钟），由 app.js 定时重新调用 load()。
  *
  * API：window.LIVE = {
- *   PRESETS, searchCity(q), nearestCity(lat,lon), load(place), judge(data), demoType(judgeResult)
+ *   PRESETS, TIMEOUT, REFRESH_MS, weatherText(code), searchCity(q),
+ *   nearestCity(lat,lon), load(place), judge(data), demoType(judgeResult), degToDir(deg)
  * }
  * ============================================================ */
 (function (global) {
   'use strict';
 
-  var TIMEOUT = 6500;
+  var TIMEOUT = 8000;          /* 请求超时：8 秒（prompt.md 要求） */
+  var REFRESH_MS = 300000;     /* 自动刷新间隔：5 分钟 */
 
   var PRESETS = [
     { name: '贵阳', prov: '贵州', provFull: '贵州省', lon: 106.63, lat: 26.65, elevation: 1100 },
@@ -33,25 +51,43 @@
     { name: '哈尔滨', prov: '黑龙江', provFull: '黑龙江省', lon: 126.53, lat: 45.80, elevation: 142 }
   ];
 
+  /* ---------------- 0. 请求与数值小工具 ---------------- */
   function fetchJSON(url, timeout) {
+    var ms = timeout || TIMEOUT;
     return new Promise(function (resolve, reject) {
       var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var settled = false;
       var timer = setTimeout(function () {
-        if (ctl) ctl.abort();
+        if (settled) return;
+        settled = true;
+        if (ctl) { try { ctl.abort(); } catch (e) {} }
         reject(new Error('timeout'));
-      }, timeout || TIMEOUT);
+      }, ms);
       fetch(url, ctl ? { signal: ctl.signal, cache: 'no-store' } : { cache: 'no-store' })
         .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
+          return r.text().then(function (txt) {
+            if (!r.ok) {
+              var reason = '';
+              try {
+                var e = JSON.parse(txt);
+                reason = e.reason || e.error || e.message || '';
+              } catch (e2) {}
+              throw new Error('HTTP ' + r.status + (reason ? ' ' + reason : ''));
+            }
+            return txt;
+          });
         })
         .then(function (txt) {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           var d;
-          try { d = JSON.parse(txt); } catch (e) { reject(new Error('bad json')); return; }
+          try { d = JSON.parse(txt); } catch (e) { reject(new Error('返回数据不是合法 JSON')); return; }
           resolve(d);
         })
         .catch(function (e) {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           reject(e);
         });
@@ -61,6 +97,141 @@
   function n(v, d) {
     var x = parseFloat(v);
     return isFinite(x) ? x : (d === undefined ? null : d);
+  }
+
+  function round1(v) {
+    var x = parseFloat(v);
+    return isFinite(x) ? Math.round(x * 10) / 10 : null;
+  }
+
+  function two(v) {
+    v = parseInt(v, 10);
+    return (v < 10 ? '0' : '') + v;
+  }
+
+  /* 本地时区 ISO 字符串 "2026-11-20T23:30" → "11-20 23:30"（不做时区换算） */
+  function fmtIsoLocal(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(s || ''));
+    if (!m) return String(s || '');
+    return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
+  }
+
+  /* 本地时区 ISO 字符串 → 毫秒（按 UTC 计算差值，避免浏览器时区影响） */
+  function isoMs(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(s || ''));
+    if (!m) return NaN;
+    return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  }
+
+  /* UTC ISO（MET Norway 用）→ 指定经度估算的当地 "MM-DD HH:MM" */
+  function fmtTsPlace(iso, offHours) {
+    var ms = Date.parse(iso);
+    if (isNaN(ms)) return String(iso || '');
+    var d = new Date(ms + (offHours || 0) * 3600000);
+    return two(d.getUTCMonth() + 1) + '-' + two(d.getUTCDate()) + ' ' +
+      two(d.getUTCHours()) + ':' + two(d.getUTCMinutes());
+  }
+
+  function errText(e) {
+    var m = (e && e.message) ? e.message : String(e);
+    if (m === 'timeout') return '请求超时（8 秒）';
+    return m;
+  }
+
+  /* ---------------- WMO 天气码 → 中文天气现象 ---------------- */
+  /* Open-Meteo weather_code 采用 WMO 4677 天气码 */
+  var WMO_ZH = {
+    0: '晴',
+    1: '晴间多云',
+    2: '多云',
+    3: '阴',
+    45: '雾',
+    48: '雾凇（冻雾）',
+    51: '小毛毛雨',
+    53: '毛毛雨',
+    55: '大毛毛雨',
+    56: '冻毛毛雨',
+    57: '强冻毛毛雨',
+    61: '小雨',
+    63: '中雨',
+    65: '大雨',
+    66: '冻雨',
+    67: '强冻雨',
+    71: '小雪',
+    73: '中雪',
+    75: '大雪',
+    77: '雪粒',
+    80: '小阵雨',
+    81: '阵雨',
+    82: '强阵雨',
+    85: '小阵雪',
+    86: '强阵雪',
+    95: '雷暴',
+    96: '雷暴伴小冰雹',
+    99: '雷暴伴大冰雹'
+  };
+
+  function weatherText(code) {
+    var c = parseInt(code, 10);
+    if (!isFinite(c)) return '';
+    if (WMO_ZH[c] !== undefined) return WMO_ZH[c];
+    /* 未列出的码按区段兜底，保证不返回空串 */
+    if (c >= 1 && c <= 3) return '多云';
+    if (c >= 45 && c <= 48) return '雾';
+    if (c >= 51 && c <= 57) return '毛毛雨';
+    if (c >= 61 && c <= 67) return '雨';
+    if (c >= 71 && c <= 77) return '雪';
+    if (c >= 80 && c <= 82) return '阵雨';
+    if (c >= 85 && c <= 86) return '阵雪';
+    if (c >= 95) return '雷暴';
+    return '';
+  }
+
+  /* MET Norway symbol_code → 中文（如 "clearsky_day" / "partlycloudy_night" / "heavyrain"） */
+  function metSymbolText(sym) {
+    if (!sym) return '';
+    var s = String(sym).toLowerCase();
+    if (s.indexOf('clearsky') === 0) return '晴';
+    if (s.indexOf('fair') === 0) return '晴间多云';
+    if (s.indexOf('partlycloudy') === 0) return '多云';
+    if (s.indexOf('cloudy') === 0) return '阴';
+    if (s.indexOf('fog') >= 0) return '雾';
+    if (s.indexOf('thunderstorm') >= 0) return '雷暴';
+    if (s.indexOf('heavyrain') >= 0) return '大雨';
+    if (s.indexOf('lightrain') >= 0) return '小雨';
+    if (s.indexOf('rainshowers') >= 0) return '阵雨';
+    if (s.indexOf('rain') >= 0) return '雨';
+    if (s.indexOf('heavysleet') >= 0) return '雨夹雪';
+    if (s.indexOf('lightsleet') >= 0) return '小范围雨夹雪';
+    if (s.indexOf('sleet') >= 0) return '雨夹雪';
+    if (s.indexOf('heavysnow') >= 0) return '大雪';
+    if (s.indexOf('lightsnow') >= 0) return '小雪';
+    if (s.indexOf('snowshowers') >= 0) return '阵雪';
+    if (s.indexOf('snow') >= 0) return '雪';
+    return '';
+  }
+
+  /* ---------------- 数据源 URL ---------------- */
+  var OPEN_CURRENT = 'temperature_2m,relative_humidity_2m,apparent_temperature,' +
+    'surface_pressure,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,' +
+    'precipitation,rain,showers,snowfall,weather_code,cloud_cover,visibility,dew_point_2m';
+  var OPEN_DAILY = 'temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_sum';
+  var OPEN_HOURLY = 'temperature_2m,surface_pressure,pressure_msl,precipitation,' +
+    'cloud_cover,weather_code,wind_speed_10m,uv_index';
+
+  function openMeteoUrl(lat, lon) {
+    return 'https://api.open-meteo.com/v1/forecast' +
+      '?latitude=' + lat.toFixed(3) + '&longitude=' + lon.toFixed(3) +
+      '&current=' + OPEN_CURRENT +
+      '&daily=' + OPEN_DAILY +
+      '&hourly=' + OPEN_HOURLY +
+      /* forecast_hours=13：Open-Meteo 把“当前这一小时”也计入，13 个才覆盖未来 12 小时 */
+      '&past_hours=24&forecast_hours=13&timezone=auto';
+  }
+
+  function metNorwayUrl(lat, lon) {
+    return 'https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=' +
+      lat.toFixed(3) + '&lon=' + lon.toFixed(3);
   }
 
   /* ---------------- 1. 城市搜索 ---------------- */
@@ -207,200 +378,400 @@
     return { name: best.s, prov: best.ps, provFull: best.p, lon: best.lon, lat: best.lat, local: true, near: true };
   }
 
-  /* ---------------- 2. wttr.in 解析 ---------------- */
-  function parseWttr(d, place) {
-    var cc = (d.current_condition && d.current_condition[0]) || {};
-    var descZh = '';
-    if (cc.lang_zh && cc.lang_zh[0]) descZh = cc.lang_zh[0].value;
+  /* ---------------- 2. Open-Meteo 主源解析 ---------------- */
+  /* 用“今日 0:00（或最早可用点）→ 当前”的模式逐时值近似 ΔT/ΔP，注真实小时数 */
+  function trendToday(hourly, current, baseIdx, curTime) {
+    var out = {
+      dT: null, dP: null, hours: null, fromHour: null, fromTime: null,
+      forecastBased: true,
+      text: '暂无趋势数据'
+    };
+    if (baseIdx < 0 || !hourly[baseIdx] || current.temp === null) return out;
+    var base = hourly[baseIdx];
+    var hours = null;
+    var a = isoMs(base.time);
+    var b = isoMs(curTime);
+    if (isFinite(a) && isFinite(b) && b >= a) hours = Math.round((b - a) / 36000) / 100; /* 毫秒→小时，保留 2 位再取 1 位 */
+    if (hours === null || !isFinite(hours)) hours = 0;
+    hours = Math.round(hours * 10) / 10;
+    out.dT = (current.temp !== null && base.temp !== null) ? round1(current.temp - base.temp) : null;
+    out.dP = (current.press !== null && base.press !== null) ? round1(current.press - base.press) : null;
+    out.hours = hours;
+    out.fromHour = base.hour;
+    out.fromTime = base.time;
+    var todayStr = String(curTime || '').slice(0, 10);
+    if (base.date === todayStr) {
+      out.text = '今日已过约 ' + hours + ' 小时（非 24h 实测）';
+    } else {
+      out.text = '较 ' + fmtIsoLocal(base.time) + '（约 ' + hours + ' 小时前，非 24h 实测）';
+    }
+    return out;
+  }
+
+  function parseOpenMeteo(d, place) {
+    if (!d || !d.current || typeof d.current !== 'object') {
+      throw new Error('返回数据缺少 current 字段');
+    }
+    var cur = d.current;
+    var hly = d.hourly || {};
+    var hTime = hly.time || [];
+    var hTemp = hly.temperature_2m || [];
+    var hPress = hly.pressure_msl || [];
+    var hSurf = hly.surface_pressure || [];
+    var hPrecip = hly.precipitation || [];
+    var hCloud = hly.cloud_cover || [];
+    var hCode = hly.weather_code || [];
+    var hWind = hly.wind_speed_10m || [];
+    var hUv = hly.uv_index || [];
+
+    var curTime = String(cur.time || '');
+    var todayStr = curTime.slice(0, 10);
+    var curHourKey = curTime.slice(0, 13);
+
+    /* 当前小时在 hourly 中的下标（current 与 hourly 的时间格式一致，可直接截断比较） */
+    var curIdx = -1;
+    for (var i = 0; i < hTime.length; i++) {
+      if (String(hTime[i]).slice(0, 13) === curHourKey) { curIdx = i; break; }
+    }
+    if (curIdx < 0 && curTime) {
+      var curMs = isoMs(curTime);
+      for (i = hTime.length - 1; i >= 0; i--) {
+        if (isoMs(hTime[i]) <= curMs) { curIdx = i; break; }
+      }
+    }
+
+    /* 基准：今日 0:00；缺失时退回当前之前最早可用点 */
+    var baseIdx = -1;
+    for (i = 0; i < hTime.length; i++) {
+      if (String(hTime[i]) === todayStr + 'T00:00') { baseIdx = i; break; }
+    }
+    if (baseIdx < 0) {
+      var start = curIdx >= 0 ? curIdx : hTime.length - 1;
+      for (i = start; i >= 0; i--) {
+        if (n(hTemp[i]) !== null) { baseIdx = i; break; }
+      }
+    }
+
+    /* 逐时序列（供曲线：过去 24h + 未来 12h） */
+    var hourly = [];
+    for (i = 0; i < hTime.length; i++) {
+      var t = String(hTime[i]);
+      hourly.push({
+        time: t,
+        ts: isoMs(t),
+        date: t.slice(0, 10),
+        hour: parseInt(t.slice(11, 13), 10),
+        temp: n(hTemp[i]),
+        press: n(hPress[i]),
+        pressSurface: n(hSurf[i]),
+        precip: n(hPrecip[i]),
+        cloud: n(hCloud[i]),
+        code: n(hCode[i]),
+        desc: weatherText(hCode[i]),
+        windSpeed: n(hWind[i])
+      });
+    }
+
+    var code = n(cur.weather_code);
+    var visM = n(cur.visibility);
+    var precip = n(cur.precipitation);
+    if (precip === null && curIdx >= 0) precip = n(hPrecip[curIdx]);
+    var press = n(cur.pressure_msl);
+    if (press === null) press = n(cur.surface_pressure);
+
     var current = {
-      temp: n(cc.temp_C),
-      feels: n(cc.FeelsLikeC),
-      press: n(cc.pressure),
-      humidity: n(cc.humidity),
-      windSpeed: n(cc.windspeedKmph),
-      windGust: n(cc.windgustKmph),
-      windDeg: n(cc.winddirDegree),
-      windDir: cc.winddir16Point || '',
-      cloud: n(cc.cloudcover),
-      visibility: n(cc.visibility),
-      uv: n(cc.uvIndex),
-      precip: n(cc.precipMM),
-      dew: n(cc.DewPointC),
-      desc: descZh || (cc.weatherDesc && cc.weatherDesc[0] && cc.weatherDesc[0].value) || '',
-      descEn: (cc.weatherDesc && cc.weatherDesc[0] && cc.weatherDesc[0].value) || '',
-      obsTime: cc.observation_time || ''
+      temp: n(cur.temperature_2m),
+      feels: n(cur.apparent_temperature),
+      press: press,
+      pressSurface: n(cur.surface_pressure),
+      humidity: n(cur.relative_humidity_2m),
+      windDir: degToDir(n(cur.wind_direction_10m)),
+      windDeg: n(cur.wind_direction_10m),
+      windSpeed: n(cur.wind_speed_10m),
+      windGust: n(cur.wind_gusts_10m),
+      cloud: n(cur.cloud_cover),
+      visibility: visM === null ? null : Math.round(visM / 100) / 10, /* 米 → 公里 */
+      desc: weatherText(code),
+      code: code,
+      precip: precip,
+      rain: n(cur.rain),
+      showers: n(cur.showers),
+      snowfall: n(cur.snowfall),
+      dew: n(cur.dew_point_2m),
+      uv: curIdx >= 0 ? round1(n(hUv[curIdx])) : null,
+      obsTime: fmtIsoLocal(curTime) + ' 模式时刻',
+      timeRaw: curTime,
+      elev: n(d.elevation)
     };
 
-    var days = d.weather || [];
-    var today = days[0] || {};
-    var hourly = [];
-    (today.hourly || []).forEach(function (h) {
-      hourly.push({
-        time: h.time,                       // "0" .. "2100"
-        hour: parseInt(h.time, 10) / 100,
-        temp: n(h.tempC),
-        press: n(h.pressure),
-        precip: n(h.precipMM),
-        cloud: n(h.cloudcover),
-        windDeg: n(h.winddirDegree),
-        windSpeed: n(h.windspeedKmph),
-        desc: (h.lang_zh && h.lang_zh[0] && h.lang_zh[0].value) || (h.weatherDesc && h.weatherDesc[0] && h.weatherDesc[0].value) || ''
-      });
-    });
+    /* 今日高/低、UV、降水合计（daily 与 current.time 同一天） */
+    var daily = d.daily || {};
+    var dTime = daily.time || [];
+    var di = -1;
+    for (i = 0; i < dTime.length; i++) {
+      if (String(dTime[i]) === todayStr) { di = i; break; }
+    }
+    if (di < 0 && dTime.length) di = 0;
+    var today = {
+      max: di >= 0 ? n((daily.temperature_2m_max || [])[di]) : null,
+      min: di >= 0 ? n((daily.temperature_2m_min || [])[di]) : null,
+      uv: di >= 0 ? n((daily.uv_index_max || [])[di]) : null,
+      sunrise: '',
+      sunset: '',
+      totalPrecip: di >= 0 ? n((daily.precipitation_sum || [])[di]) : null
+    };
 
-    /* 三日 3 小时预报（画趋势用） */
-    var forecast = [];
-    days.forEach(function (day, di) {
-      (day.hourly || []).forEach(function (h, hi) {
-        forecast.push({
-          day: di,
-          time: h.time,
-          temp: n(h.tempC),
-          press: n(h.pressure),
-          precip: n(h.precipMM),
-          cloud: n(h.cloudcover),
-          windDeg: n(h.winddirDegree),
-          windSpeed: n(h.windspeedKmph)
-        });
-      });
-    });
+    var metrics = trendToday(hourly, current, baseIdx, curTime);
 
-    var metrics = trendFromHourly(hourly, current);
+    var warnings = ['数据为 Open-Meteo 数值模式（网格插值/预报），非气象站实测'];
+    if (metrics.hours !== null && metrics.hours < 3) {
+      warnings.push('今日已过时段不足 3 小时，ΔT/ΔP 参考性有限');
+    }
+    if (hourly.length < 20) {
+      warnings.push('逐时数据仅 ' + hourly.length + ' 条，曲线参考性有限');
+    }
+    if (place.elevation !== null && place.elevation !== undefined &&
+        current.elev !== null && Math.abs(place.elevation - current.elev) > 300) {
+      warnings.push('城市海拔 ' + Math.round(place.elevation) + ' m 与模式网格海拔 ' +
+        Math.round(current.elev) + ' m 差异较大，气温/气压仅供参考');
+    }
 
     return {
-      source: 'wttr.in',
+      source: 'Open-Meteo 数值模式',
       place: place,
       current: current,
-      today: {
-        max: n(today.maxtempC),
-        min: n(today.mintempC),
-        uv: n(today.uvIndex),
-        sunrise: today.astronomy && today.astronomy[0] ? today.astronomy[0].sunrise : '',
-        sunset: today.astronomy && today.astronomy[0] ? today.astronomy[0].sunset : '',
-        totalPrecip: (today.hourly || []).reduce(function (s, h) { return s + (n(h.precipMM, 0) || 0); }, 0)
-      },
+      today: today,
       hourly: hourly,
-      forecast: forecast,
+      forecast: curIdx >= 0 ? hourly.slice(curIdx) : hourly,
       metrics: metrics,
-      warnings: metrics.hours < 3 ? ['实况数据已过去时段不足 3 小时，温度/气压趋势参考性有限'] : [],
+      warnings: warnings,
       fetchedAt: new Date()
     };
   }
 
-  /* 用今日已过时段最早的一个整点与当前实况比较，得到近似变化 */
-  function trendFromHourly(hourly, current) {
-    var nowH = new Date().getHours();
-    if (!hourly.length || current.temp === null) {
-      return { dT: null, dP: null, hours: 0, fromHour: null, text: '暂无趋势数据' };
-    }
-    var pick = null;
-    for (var i = 0; i < hourly.length; i++) {
-      if (hourly[i].hour <= nowH - 2 && hourly[i].temp !== null) { pick = hourly[i]; break; }
-    }
-    if (!pick) pick = hourly[0];
-    var hours = Math.max(1, nowH - pick.hour);
-    var dT = current.temp !== null && pick.temp !== null ? current.temp - pick.temp : null;
-    var dP = current.press !== null && pick.press !== null ? current.press - pick.press : null;
-    return {
-      dT: dT === null ? null : Math.round(dT * 10) / 10,
-      dP: dP === null ? null : Math.round(dP * 10) / 10,
-      hours: hours,
-      fromHour: pick.hour,
-      text: '较今日 ' + ('0' + pick.hour).slice(-2) + ':00 前后（约 ' + hours + ' 小时）'
-    };
+  /* ---------------- 3. MET Norway 备源解析 ---------------- */
+  function metSymbolOf(t) {
+    if (!t || !t.data) return '';
+    var n1 = t.data.next_1_hours;
+    if (n1 && n1.summary && n1.summary.symbol_code) return n1.summary.symbol_code;
+    var n6 = t.data.next_6_hours;
+    if (n6 && n6.summary && n6.summary.symbol_code) return n6.summary.symbol_code;
+    return '';
   }
 
-  /* ---------------- 3. MET Norway 备选 ---------------- */
-  function parseMet(d, place) {
-    var ts = (d.properties && d.properties.timeseries) || [];
-    if (!ts.length) throw new Error('met.no empty');
-    var now = Date.now();
-    var first = ts[0];
-    var cur = first && first.data && first.data.instant && first.data.instant.details ? first.data.instant.details : {};
-    var near = first;
-    for (var i = 0; i < Math.min(ts.length, 8); i++) {
-      if (Math.abs(new Date(ts[i].time).getTime() - now) < Math.abs(new Date(near.time).getTime() - now)) near = ts[i];
+  /* 1h 降水量 mm（没有 next_1_hours 时用 next_6_hours 平均） */
+  function metPrecip1h(t) {
+    if (!t || !t.data) return null;
+    var n1 = t.data.next_1_hours;
+    if (n1 && n1.details && n1.details.precipitation_amount !== undefined) {
+      return n(n1.details.precipitation_amount);
     }
-    var nd = near.data.instant.details || {};
-    var hourlies = ts.slice(0, 24).map(function (t) {
-      var det = t.data.instant.details || {};
-      var next1 = t.data.next_1_hours && t.data.next_1_hours.details;
-      return {
-        time: t.time,
-        hour: new Date(t.time).getHours(),
-        temp: n(det.air_temperature),
-        press: n(det.air_pressure_at_sea_level),
-        precip: next1 ? n(next1.precipitation_amount) : null,
-        cloud: n(det.cloud_area_fraction),
-        windDeg: n(det.wind_from_direction),
-        windSpeed: n(det.wind_speed),
-        desc: ''
-      };
-    });
-    var windFrom = n(nd.wind_from_direction);
+    var n6 = t.data.next_6_hours;
+    if (n6 && n6.details && n6.details.precipitation_amount !== undefined) {
+      var p6 = n(n6.details.precipitation_amount);
+      return p6 === null ? null : round1(p6 / 6);
+    }
+    return null;
+  }
+
+  /* 备源不含过去时段，只能用“未来约 N 小时预报变化”代替，并明确标注 forecastBased */
+  function forecastTrend(hourly, current, hoursAhead) {
+    var out = {
+      dT: null, dP: null, hours: null, fromHour: null, fromTime: null,
+      forecastBased: true,
+      text: '暂无趋势数据'
+    };
+    if (!hourly.length || current.temp === null) return out;
+    var base = hourly[0];
+    var target = hourly[hourly.length - 1];
+    var want = hoursAhead || 9;
+    for (var i = 1; i < hourly.length; i++) {
+      if ((hourly[i].ts - base.ts) / 3600000 >= want) { target = hourly[i]; break; }
+    }
+    var hours = round1((target.ts - base.ts) / 3600000);
+    if (hours === null || hours <= 0) hours = 0;
+    out.dT = (current.temp !== null && target.temp !== null) ? round1(target.temp - current.temp) : null;
+    out.dP = (current.press !== null && target.press !== null) ? round1(target.press - current.press) : null;
+    out.hours = hours;
+    out.fromHour = base.hour;
+    out.fromTime = base.time;
+    out.text = '未来约 ' + hours + ' 小时预报变化（MET Norway 数值模式，非实测）';
+    return out;
+  }
+
+  function parseMet(d, place) {
+    var props = d && d.properties;
+    var ts = props && props.timeseries;
+    if (!ts || !ts.length) throw new Error('返回数据缺少 timeseries');
+    var now = Date.now();
+
+    /* 取离当前时刻最近的预报时次作为“当前” */
+    var nearIdx = 0, best = Infinity;
+    for (var i = 0; i < ts.length; i++) {
+      var ms = Date.parse(ts[i].time);
+      if (isNaN(ms)) continue;
+      var diff = Math.abs(ms - now);
+      if (diff < best) { best = diff; nearIdx = i; }
+    }
+    var near = ts[nearIdx];
+    var nd = (near.data && near.data.instant && near.data.instant.details) || {};
+
+    /* 备源没有时区字段：按经度粗估当地时差（教学展示够用，且不冒充精确） */
+    var off = isFinite(place.lon) ? Math.round(place.lon / 15) : 0;
+
+    var windMs = n(nd.wind_speed);
     var current = {
       temp: n(nd.air_temperature),
       feels: null,
       press: n(nd.air_pressure_at_sea_level),
+      pressSurface: null,
       humidity: n(nd.relative_humidity),
-      windSpeed: n(nd.wind_speed),
-      windDeg: windFrom,
-      windDir: degToDir(windFrom),
+      windDir: degToDir(n(nd.wind_from_direction)),
+      windDeg: n(nd.wind_from_direction),
+      windSpeed: windMs === null ? null : round1(windMs * 3.6), /* m/s → km/h */
+      windGust: null,
       cloud: n(nd.cloud_area_fraction),
-      precip: hourlies[0] ? hourlies[0].precip : null,
-      elev: d.geometry && d.geometry.coordinates ? d.geometry.coordinates[2] : null,
-      desc: '',
-      descEn: ''
+      visibility: null,
+      desc: metSymbolText(metSymbolOf(near)),
+      code: null,
+      precip: metPrecip1h(near),
+      rain: null,
+      showers: null,
+      snowfall: null,
+      dew: null,
+      uv: null,
+      obsTime: fmtTsPlace(near.time, off) + ' 模式时刻',
+      timeRaw: near.time,
+      elev: (d.geometry && d.geometry.coordinates && d.geometry.coordinates.length > 2)
+        ? n(d.geometry.coordinates[2]) : null
     };
-    /* 未来 12 小时内的变化作为“趋势”替代（明确标注为预报变化） */
-    var later = hourlies[Math.min(3, hourlies.length - 1)];
-    var metrics = {
-      dT: current.temp !== null && later.temp !== null ? Math.round((later.temp - current.temp) * 10) / 10 : null,
-      dP: current.press !== null && later.press !== null ? Math.round((later.press - current.press) * 10) / 10 : null,
-      hours: 9,
-      fromHour: null,
-      forecastBased: true,
-      text: '未来约 9 小时预报变化（met.no，非实测）'
+
+    /* 未来逐时（过去时段备源不提供）：最多 37 条 / 30 小时 */
+    var hourly = [];
+    var horizon = now + 30 * 3600000;
+    for (i = nearIdx; i < ts.length && hourly.length < 37; i++) {
+      var t = ts[i];
+      var tms = Date.parse(t.time);
+      if (isNaN(tms) || tms > horizon) break;
+      var det = (t.data && t.data.instant && t.data.instant.details) || {};
+      var shifted = new Date(tms + off * 3600000);
+      var sp = n(det.wind_speed);
+      hourly.push({
+        time: t.time,
+        ts: tms,
+        date: shifted.toISOString().slice(0, 10),
+        hour: shifted.getUTCHours(),
+        temp: n(det.air_temperature),
+        press: n(det.air_pressure_at_sea_level),
+        pressSurface: null,
+        precip: metPrecip1h(t),
+        cloud: n(det.cloud_area_fraction),
+        code: null,
+        desc: metSymbolText(metSymbolOf(t)),
+        windSpeed: sp === null ? null : round1(sp * 3.6)
+      });
+    }
+
+    /* 今日高/低：备源只有当前之后的预报，只能算“今日剩余时段”，并注明 */
+    var todayStr = new Date(now + off * 3600000).toISOString().slice(0, 10);
+    var dayTemps = [];
+    for (i = nearIdx; i < ts.length && i < nearIdx + 40; i++) {
+      var tms2 = Date.parse(ts[i].time);
+      if (isNaN(tms2)) continue;
+      var dstr = new Date(tms2 + off * 3600000).toISOString().slice(0, 10);
+      if (dstr > todayStr) break;
+      if (dstr < todayStr) continue;
+      var tv = n(ts[i].data && ts[i].data.instant && ts[i].data.instant.details &&
+        ts[i].data.instant.details.air_temperature);
+      if (tv !== null) dayTemps.push(tv);
+    }
+    var hasDayRange = dayTemps.length >= 2;
+    var today = {
+      max: hasDayRange ? Math.max.apply(null, dayTemps) : null,
+      min: hasDayRange ? Math.min.apply(null, dayTemps) : null,
+      uv: null,
+      sunrise: '',
+      sunset: '',
+      totalPrecip: null
     };
+
+    var metrics = forecastTrend(hourly, current, 9);
+
+    var warnings = ['主源 Open-Meteo 不可用，已降级到 MET Norway 数值预报（非气象站实测）'];
+    warnings.push('备源不含过去时段逐时数据，曲线从当前时刻起为未来预报');
+    if (hourly.length < 20) {
+      warnings.push('逐时数据仅 ' + hourly.length + ' 条，曲线参考性有限');
+    }
+    if (hasDayRange) {
+      warnings.push('今日高/低为备源对今日剩余时段的预报值');
+    }
+
     return {
       source: 'MET Norway',
       place: place,
       current: current,
-      today: { max: null, min: null, uv: null, sunrise: '', sunset: '', totalPrecip: null },
-      hourly: hourlies,
-      forecast: hourlies,
+      today: today,
+      hourly: hourly,
+      forecast: hourly,
       metrics: metrics,
-      warnings: ['主数据源不可用，已降级到 MET Norway；气温/气压变化来自预报而非实测'],
+      warnings: warnings,
       fetchedAt: new Date()
     };
   }
 
-  var DIRS = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
-  function degToDir(deg) {
-    if (deg === null || deg === undefined || !isFinite(deg)) return '';
-    var i = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
-    return DIRS[i];
-  }
-  function dirToDeg16(pt) {
-    var map = { N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
-      S: 180, SSW: 202.5, SW: 225, WSW: 247.5, W: 270, WNW: 292.5, NW: 315, NNW: 337.5 };
-    return map[pt] !== undefined ? map[pt] : null;
+  /* ---------------- 4. 统一入口（Open-Meteo / MET Norway 并行竞速 → 双失败明确报错） ---------------- */
+  function normalizePlace(place, lat, lon) {
+    place = place || {};
+    return {
+      name: place.name || '当前位置',
+      prov: place.prov || place.provFull || place.admin1 || '',
+      provFull: place.provFull || place.prov || place.admin1 || '',
+      lat: lat,
+      lon: lon,
+      elevation: n(place.elevation)
+    };
   }
 
-  /* ---------------- 4. 统一入口 ---------------- */
   function load(place) {
+    place = place || {};
     var lat = n(place.lat), lon = n(place.lon);
-    if (lat === null || lon === null) return Promise.reject(new Error('经纬度缺失'));
-    var wttrUrl = 'https://wttr.in/' + lat.toFixed(3) + ',' + lon.toFixed(3) + '?format=j1&lang=zh';
-    return fetchJSON(wttrUrl, TIMEOUT)
-      .then(function (d) { return parseWttr(d, place); })
-      .catch(function () {
-        var metUrl = 'https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=' +
-          lat.toFixed(3) + '&lon=' + lon.toFixed(3);
-        return fetchJSON(metUrl, TIMEOUT).then(function (d) { return parseMet(d, place); });
-      })
+    if (lat === null || lon === null) {
+      return Promise.reject(new Error('经纬度缺失，无法获取实况'));
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return Promise.reject(new Error('经纬度超出有效范围，无法获取实况'));
+    }
+    var P = normalizePlace(place, lat, lon);
+
+    /* 两个数据源并行请求，谁先成功用谁（双源竞速）；
+       都失败才报错。二者都是数值模式，页面上会标明本次来源。 */
+    var omPromise = fetchJSON(openMeteoUrl(lat, lon), TIMEOUT)
+      .then(function (d) { return parseOpenMeteo(d, P); });
+    var metPromise = fetchJSON(metNorwayUrl(lat, lon), TIMEOUT)
+      .then(function (d) { return parseMet(d, P); });
+
+    return new Promise(function (resolve, reject) {
+      var pending = 2, settled = false, errs = [];
+      function ok(d) { if (settled) return; settled = true; resolve(d); }
+      function bad(name, e) {
+        errs.push(name + '（' + errText(e) + '）');
+        pending--;
+        if (!settled && pending === 0) {
+          settled = true;
+          reject(new Error('实时天气获取失败：' + errs.join('；') + '。请检查网络后重试'));
+        }
+      }
+      omPromise.then(ok).catch(function (e) { bad('Open-Meteo', e); });
+      metPromise.then(ok).catch(function (e) { bad('MET Norway', e); });
+    })
       .then(function (data) {
-        if (data.current.windDir && !data.current.windDeg) {
+        if (P.elevation === null && data.current && data.current.elev !== null &&
+            data.current.elev !== undefined) {
+          P.elevation = data.current.elev;
+        }
+        data.place = P;
+        if (data.current && data.current.windDir &&
+            (data.current.windDeg === null || data.current.windDeg === undefined)) {
           data.current.windDeg = dirToDeg16(data.current.windDir);
         }
         data.judge = judge(data);
@@ -473,7 +844,7 @@
 
     if (data.metrics && data.metrics.forecastBased) {
       confidence = 'low';
-      reasons.push('注意：本次变化量来自预报而非实测，结论仅供参考。');
+      reasons.push('注意：本次数据来自数值模式（非气象站实测），结论仅供参考。');
     }
 
     return {
@@ -494,9 +865,24 @@
     return null;
   }
 
+  var DIRS = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+  function degToDir(deg) {
+    if (deg === null || deg === undefined || !isFinite(deg)) return '';
+    var i = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+    return DIRS[i];
+  }
+  function dirToDeg16(pt) {
+    var map = { N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
+      S: 180, SSW: 202.5, SW: 225, WSW: 247.5, W: 270, WNW: 292.5, NW: 315, NNW: 337.5 };
+    return map[pt] !== undefined ? map[pt] : null;
+  }
+
   global.LIVE = {
     PRESETS: PRESETS,
     TIMEOUT: TIMEOUT,
+    REFRESH_MS: REFRESH_MS,
+    weatherText: weatherText,
+    WEATHER_CODES: WMO_ZH,
     searchCity: searchCity,
     nearestCity: nearestCity,
     load: load,

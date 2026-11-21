@@ -24,14 +24,14 @@
     <nav id="tabs" aria-label="视图切换">
       <button class="tab on" data-model="M1">① 立体空间</button>
       <button class="tab" data-model="M2">② 剖面图解</button>
-      <button class="tab" data-model="M3">③ 天气图</button>
-      <button class="tab" data-model="M4">④ 要素曲线</button>
-      <button class="tab" data-model="M5">⑤ 知识库</button>
-      <button class="tab" data-model="M6">⑥ 实况天气</button>
-      <button class="tab" data-model="M7">⑦ 锋面气旋</button>
+      <button class="tab" data-model="M4">③ 要素曲线</button>
+      <button class="tab" data-model="M5">④ 知识库</button>
+      <button class="tab" data-model="M6">⑤ 实况天气</button>
+      <button class="tab" data-model="M7">⑥ 锋面气旋</button>
+      <button class="tab" data-model="M8">⑦ 三维地球</button>
     </nav>
     <div class="top-actions">
-      <button id="btnPrompt" class="ghost" title="查看完美提示词">提示词</button>
+      <span id="netBadge" class="net-badge" title="联网状态"><i></i><b>联网</b></span>
       <button id="btnQuiz" class="primary" title="课堂练习">练习</button>
     </div>
   </header>
@@ -43,6 +43,7 @@
     <section id="stage">
       <div id="viewArea">
         <canvas id="gl"></canvas>
+        <canvas id="gl8"></canvas>
         <canvas id="c2d"></canvas>
 
         <div id="overlayTop">
@@ -60,15 +61,19 @@
             <button data-stage="2">③ 成熟</button>
             <button data-stage="3">④ 消亡</button>
           </div>
-          <div id="mapBar" class="chips" hidden aria-label="天气图模式">
-            <button data-map="cyclone" class="on">锋面气旋</button>
-            <button data-map="rainbelt">我国雨带</button>
-            <button data-map="symbols">符号判读</button>
-            <button data-map="world">全球</button>
-            <span class="month-wrap" id="monthWrap" hidden>
-              <b id="monthLabel">6 月</b>
-              <input type="range" id="monthSlider" min="4" max="9" step="1" value="6" aria-label="月份" />
-            </span>
+          <div id="globeBar" class="chips" hidden aria-label="三维地球视角">
+            <span class="chips-label">视角</span>
+            <button data-gview="eastAsia" class="on">东亚</button>
+            <button data-gview="north">北半球</button>
+            <button data-gview="pacific">太平洋</button>
+            <button data-gview="south">南半球</button>
+            <button data-gview="global">全球</button>
+            <span class="chips-label">显示</span>
+            <button data-gtoggle="spin" class="on" title="自动旋转">自转</button>
+            <button data-gtoggle="belts" class="on">气压带</button>
+            <button data-gtoggle="isobars" class="on" title="实时海平面气压等压线（Open-Meteo）">等压线</button>
+            <button data-gtoggle="labels" class="on">标注</button>
+            <button data-gtoggle="live" class="on" title="全球 8 城实时天气（Open-Meteo）">实时</button>
           </div>
         </div>
 
@@ -78,6 +83,14 @@
         <div id="fallback" hidden>
           <h3>三维渲染不可用</h3>
           <p>当前浏览器未启用 WebGL，已自动切换到「剖面图解」视图，动画与讲解不受影响。</p>
+        </div>
+
+        <div id="globeInfo" hidden>
+          <h4>全球气压场 · 实时天气</h4>
+          <p class="dim" id="globeKey">蓝色细线＝实时等压线（hPa，越密梯度越大）· 城市标签＝气温 ℃ · 箭头＝风的去向，颜色示风速</p>
+          <p class="dim hide-sm">拖动旋转 · 滚轮 / 双指缩放 · 底图由 geo-three 本地生成（Natural Earth 1:110m）</p>
+          <p class="dim" id="globeLive">实时天气：待获取</p>
+          <p class="dim" id="globePressure">气压场：离线（联网后显示实时等压线）</p>
         </div>
       </div>
 
@@ -180,7 +193,7 @@
 
       <div class="card live-note">
         <h3>数据来源与判读说明</h3>
-        <p>实况数据来自公开气象服务：<b>wttr.in</b>（主）与 <b>MET Norway</b>（备），城市坐标与海拔来自 <b>Open-Meteo 地理编码</b>。页面不会伪造数据：任一数据源失败会降级或明确提示，可手动输入观测值。</p>
+        <p>实况数据来自公开气象服务：<b>Open-Meteo</b>（主）与 <b>MET Norway</b>（备），二者并行取数、先成功者胜；城市坐标与海拔来自 <b>Open-Meteo 地理编码</b> 与本地城市索引。数据为数值模式（非气象站实测），页面会显示来源、数据时间并每 5 分钟自动刷新；取不到数据时明确提示，绝不伪造，也可手动输入观测值。</p>
         <p>教材判据使用「24 小时气温 / 气压变化」，但公开免费数据源通常取不到昨日同刻的实测值，本页因此用<b>今日已过时段的变化</b>近似，并在结论中标注实际时段长度，不冒充 24 小时。</p>
         <p class="dim">判据参考：冷锋 ΔT≤−4℃ 且 ΔP≥+3hPa（偏南风转偏北风、阵性降水）；暖锋 ΔT≥+3℃ 且 ΔP≤−3hPa（连续性降水）；准静止锋 |ΔT|&lt;2.5℃、|ΔP|&lt;2hPa 且降水持续时间长。</p>
       </div>
@@ -204,31 +217,14 @@
     </div>
   </div>
 
-  <!-- ============ 提示词弹层 ============ -->
-  <div class="modal" id="modalPrompt" hidden>
-    <div class="sheet">
-      <header>
-        <h3>「锋与天气」完美提示词</h3>
-        <button id="promptClose" class="round" aria-label="关闭">✕</button>
-      </header>
-      <div class="prompt-body" id="promptBody"></div>
-      <footer>
-        <button id="promptCopy" class="primary">复制全文</button>
-        <span id="promptHint" class="dim"></span>
-      </footer>
-    </div>
-  </div>
-
   <footer id="foot">
     <span>锋与天气 · 交互式教具</span>
     <span class="dim">离线可用 · 手机适配 · 数据与图注均可溯源</span>
   </footer>
 </div>
 
-<!-- 提示词全文（构建时由 build.mjs 注入） -->
-<script id="promptData">window.PROMPT = "";</script>
-
 <script src="vendor/three.min.js"></script>
+<script src="vendor/geo-three.js"></script>
 <script src="src/front-data.js"></script>
 <script src="src/helpers.js"></script>
 <script src="src/geo-china.js"></script>
@@ -236,10 +232,12 @@
 <script src="src/geo-cities.js"></script>
 <script src="src/geo.js"></script>
 <script src="src/knowledge.js"></script>
+<script src="src/field.js"></script>
 <script src="src/m2-section.js"></script>
-<script src="src/m3-map.js"></script>
 <script src="src/m4-chart.js"></script>
 <script src="src/m7-cyclone.js"></script>
+<script src="src/live-globe.js"></script>
+<script src="src/m8-globe.js"></script>
 <script src="src/quiz.js"></script>
 <script src="src/scene3d.js"></script>
 <script src="src/live.js"></script>

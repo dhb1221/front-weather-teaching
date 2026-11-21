@@ -1,5 +1,5 @@
 /* ============================================================
- * app.js — 主控：状态 / 视图切换 / 主循环 / 交互 / 知识库 / 练习 / 提示词 / 实况
+ * app.js — 主控：状态 / 视图切换 / 主循环 / 交互 / 知识库 / 练习 / 实况
  * 依赖：window.FRONT · H · MODELS(M1~M4) · KNOWLEDGE · Quiz · LIVE
  * state 是唯一数据源，2D 模型只读不写。
  * ============================================================ */
@@ -16,10 +16,9 @@
     playing: false,
     speed: 1,
     model: 'M1',
-    mapMode: 'cyclone',
-    month: 6,
     show: { slope: true, air: true, clouds: true, rain: true, labels: true, grid: true },
-    view: 'iso'
+    view: 'iso',
+    globe: { view: 'eastAsia', spin: true, belts: true, isobars: true, labels: true, live: true }
   };
 
   /* ---------------- DOM 引用 ---------------- */
@@ -31,6 +30,7 @@
     stage: $('#stage'),
     viewArea: $('#viewArea'),
     gl: $('#gl'),
+    gl8: $('#gl8'),
     c2d: $('#c2d'),
     loading: $('#loading'),
     fallback: $('#fallback'),
@@ -39,10 +39,6 @@
     tabs: $$('#tabs .tab'),
     typeBtns: $('#typeBtns'),
     viewPresets: $('#viewPresets'),
-    mapBar: $('#mapBar'),
-    monthWrap: $('#monthWrap'),
-    monthSlider: $('#monthSlider'),
-    monthLabel: $('#monthLabel'),
     tSlider: $('#tSlider'),
     btnPlay: $('#btnPlay'),
     btnReset: $('#btnReset'),
@@ -60,14 +56,15 @@
     cycBar: $('#cycBar'), marks: document.querySelectorAll ? document.querySelector('.marks') : null,
     modalQuiz: $('#modalQuiz'), quizBody: $('#quizBody'), quizProgress: $('#quizProgress'),
     quizScore: $('#quizScore'), quizNext: $('#quizNext'),
-    modalPrompt: $('#modalPrompt'), promptBody: $('#promptBody'), promptHint: $('#promptHint'),
-    btnPrompt: $('#btnPrompt'), btnQuiz: $('#btnQuiz')
+    globeBar: $('#globeBar'), globeInfo: $('#globeInfo'),
+    netBadge: $('#netBadge'),
+    btnQuiz: $('#btnQuiz')
   };
 
   /* ---------------- 画布 ---------------- */
   var c2d = el.c2d.getContext('2d');
   var W = 0, H2 = 0, DPR = Math.min(global.devicePixelRatio || 1, 2);
-  var glReady = false, m1 = null, m2 = null, m3 = null, m4 = null, m7 = null;
+  var glReady = false, m1 = null, m2 = null, m4 = null, m7 = null, m8 = null;
   var frameError = 0, lastFrameErrorToast = 0;
 
   function sizeOf() {
@@ -85,11 +82,17 @@
     el.c2d.style.height = H2 + 'px';
     el.gl.style.width = W + 'px';
     el.gl.style.height = H2 + 'px';
+    if (el.gl8) {
+      el.gl8.style.width = W + 'px';
+      el.gl8.style.height = H2 + 'px';
+    }
     if (m2) m2.resize(W, H2);
-    if (m3) m3.resize(W, H2);
     if (m4) m4.resize(W, H2);
     if (m1 && glReady) {
       try { m1.resize(W, H2); } catch (e) { /* 忽略 */ }
+    }
+    if (m8) {
+      try { m8.resize(W, H2); } catch (e) { /* 忽略 */ }
     }
     if (state.model === 'M6') renderLiveChart();
   }
@@ -119,6 +122,23 @@
     }
   }
 
+  /* ---------------- 三维地球（geo-three） ---------------- */
+  function initGlobe() {
+    if (m8) { try { m8.resize(W, H2); } catch (e) { } return true; }
+    if (!global.MODELS || !global.MODELS.M8) { toast('三维地球组件未加载'); return false; }
+    try {
+      m8 = global.MODELS.M8({ canvas: el.gl8, width: W, height: H2, state: state, FRONT: F, H: H });
+      m8.resize(W, H2);
+      m8.setView(state.globe.view);
+      m8.setToggles(state.globe);
+      return true;
+    } catch (e) {
+      m8 = null;
+      toast('三维地球不可用：' + (e && e.message ? e.message : e));
+      return false;
+    }
+  }
+
   /* 三维不可用时的提示条：可点击关闭，几秒后自动隐藏 */
   var fallbackTimer = 0;
   function showFallback() {
@@ -132,7 +152,6 @@
     var MODS = global.MODELS || {};
     var ctx = { canvas: el.c2d, width: W, height: H2, state: state, FRONT: F, H: H };
     if (model === 'M2' && !m2 && MODS.M2) m2 = MODS.M2(ctx);
-    if (model === 'M3' && !m3 && MODS.M3) m3 = MODS.M3(ctx);
     if (model === 'M4' && !m4 && MODS.M4) m4 = MODS.M4(ctx);
     if (model === 'M7' && !m7 && MODS.M7) m7 = MODS.M7(ctx);
   }
@@ -151,24 +170,35 @@
       try { activeTab.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch (e) {}
     }
 
-    var is3D = model === 'M1';
-    var is2D = model === 'M2' || model === 'M3' || model === 'M4' || model === 'M7';
+    var is3D = model === 'M1' || model === 'M8';
+    var is2D = model === 'M2' || model === 'M4' || model === 'M7';
 
     el.stage.hidden = !(is3D || is2D);
-    /* 锋面气旋是“纯演示”视图：右侧面板收起，让画布占满主区 */
-    $('#panel').hidden = !(is3D || is2D) || model === 'M7';
+    /* 锋面气旋 / 三维地球是「纯演示」视图：右侧面板收起，让画布占满主区 */
+    $('#panel').hidden = !(is3D || is2D) || model === 'M7' || model === 'M8';
     el.knowledge.hidden = model !== 'M5';
     el.live.hidden = model !== 'M6';
 
-    el.gl.style.display = is3D ? 'block' : 'none';
+    el.gl.style.display = model === 'M1' ? 'block' : 'none';
+    if (el.gl8) el.gl8.style.display = model === 'M8' ? 'block' : 'none';
     el.c2d.style.display = is2D ? 'block' : 'none';
-    el.viewPresets.hidden = !is3D;
-    el.mapBar.hidden = model !== 'M3';
+    el.viewPresets.hidden = model !== 'M1';
+    if (el.globeBar) el.globeBar.hidden = model !== 'M8';
+    if (el.globeInfo) el.globeInfo.hidden = model !== 'M8';
+    var ctl = $('#ctrlbar');
+    if (ctl) ctl.hidden = model === 'M8';
 
-    if (is3D) init3D();
+    if (is3D) {
+      if (model === 'M8') { state.playing = false; updatePlayBtn(); initGlobe(); resizeAll(); }
+      else init3D();
+    }
     if (is2D) { ensure2D(model); resizeAll(); }
     if (model === 'M5') renderKnowledge();
-    if (model === 'M6') renderLiveShell();
+    if (model === 'M6') {
+      renderLiveShell();
+      if (liveData && Date.now() - liveUpdatedAt > liveRefreshMs() && !liveBusy) liveLoad(livePlace, true);
+      else scheduleLiveRefresh();
+    }
     syncChrome();
 
     if (prev === 'M6' && model !== 'M6') { /* 保留已取数据 */ }
@@ -194,14 +224,21 @@
         else { s2.hidden = true; }
       });
     }
-    el.mapBar.hidden = state.model !== 'M3';
-    el.monthWrap.hidden = !(state.model === 'M3' && state.mapMode === 'rainbelt');
-    /* 「天气图」模式条与月份滑条要跟 state 同步（含 URL 参数进入时） */
-    Array.prototype.forEach.call(el.mapBar.querySelectorAll('[data-map]'), function (b) {
-      b.classList.toggle('on', b.getAttribute('data-map') === state.mapMode);
-    });
-    if (el.monthSlider) el.monthSlider.value = String(state.month);
-    if (el.monthLabel) el.monthLabel.textContent = state.month + ' 月';
+    /* 三维地球：视角 / 显示开关与 state 同步 */
+    if (el.globeBar) {
+      el.globeBar.hidden = state.model !== 'M8';
+      if (state.model === 'M8') {
+        Array.prototype.forEach.call(el.globeBar.querySelectorAll('[data-gview]'), function (b) {
+          b.classList.toggle('on', b.getAttribute('data-gview') === state.globe.view);
+        });
+        Array.prototype.forEach.call(el.globeBar.querySelectorAll('[data-gtoggle]'), function (b) {
+          b.classList.toggle('on', !!state.globe[b.getAttribute('data-gtoggle')]);
+        });
+      }
+    }
+    if (el.globeInfo) el.globeInfo.hidden = state.model !== 'M8';
+    var ctlbar = $('#ctrlbar');
+    if (ctlbar) ctlbar.hidden = state.model === 'M8';
   }
 
   /* ---------------- 类型按钮 / 图例 ---------------- */
@@ -300,6 +337,16 @@
     toastTimer = setTimeout(function () { el.toast.classList.remove('show'); }, 2200);
   }
 
+  /* 联网状态：离线时教学核心可用，实况类功能会提示不可用 */
+  function syncNetBadge() {
+    var on = !(global.navigator && global.navigator.onLine === false);
+    if (!el.netBadge) return;
+    el.netBadge.classList.toggle('off', !on);
+    var b = el.netBadge.querySelector('b');
+    if (b) b.textContent = on ? '联网' : '离线';
+    el.netBadge.title = on ? '联网：可取实时天气（M6 / 三维地球）' : '离线：教学核心可用，实时天气不可用';
+  }
+
   /* ---------------- 主循环 ---------------- */
   var lastT = 0;
   function loop(now) {
@@ -317,8 +364,10 @@
     try {
       if (state.model === 'M1' && glReady && m1) {
         m1.frame(state, dt);
-      } else if (state.model === 'M2' || state.model === 'M3' || state.model === 'M4' || state.model === 'M7') {
-        var model = state.model === 'M2' ? m2 : state.model === 'M3' ? m3 : state.model === 'M4' ? m4 : m7;
+      } else if (state.model === 'M8' && m8) {
+        m8.frame(state, dt);
+      } else if (state.model === 'M2' || state.model === 'M4' || state.model === 'M7') {
+        var model = state.model === 'M2' ? m2 : state.model === 'M4' ? m4 : m7;
         if (model) {
           c2d.setTransform(DPR, 0, 0, DPR, 0, 0);
           c2d.clearRect(0, 0, W, H2);
@@ -356,8 +405,8 @@
   function syncURL() {
     if (!global.history || !global.history.replaceState) return;
     var q = '?type=' + state.type + '&m=' + state.model + '&t=' + state.t.toFixed(2);
-    if (state.model === 'M3') q += '&map=' + state.mapMode + '&month=' + state.month;
     if (state.model === 'M1') q += '&view=' + state.view;
+    if (state.model === 'M8') q += '&g=' + state.globe.view;
     try { global.history.replaceState(null, '', q); } catch (e) { /* file:// 下可能失败 */ }
   }
 
@@ -370,10 +419,9 @@
     });
     if (F.types.indexOf(q.type) >= 0) state.type = q.type;
     if (q.t !== undefined && isFinite(parseFloat(q.t))) state.t = Math.max(0, Math.min(1, parseFloat(q.t)));
-    if (q.m && /^M[1-7]$/.test(q.m)) state.model = q.m;
-    if (q.map && ['cyclone', 'rainbelt', 'symbols', 'world'].indexOf(q.map) >= 0) state.mapMode = q.map;
-    if (q.month) state.month = Math.max(4, Math.min(9, parseInt(q.month, 10) || 6));
+    if (q.m && /^M[1-8]$/.test(q.m)) state.model = q.m;
     if (q.view && ['iso', 'profile', 'top', 'cold', 'warm'].indexOf(q.view) >= 0) state.view = q.view;
+    if (q.g && ['eastAsia', 'north', 'pacific', 'south', 'global'].indexOf(q.g) >= 0) state.globe.view = q.g;
   }
 
   /* ---------------- 知识库 ---------------- */
@@ -475,35 +523,19 @@
     el.quizNext.disabled = false;
   }
 
-  /* ---------------- 提示词 ---------------- */
-  function openPrompt() {
-    var txt = global.PROMPT || '';
-    el.promptBody.innerHTML = txt
-      ? '<pre>' + txt.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>'
-      : '<p class="dim">提示词全文在构建时注入；开发模式下请打开仓库中的 prompt.md。</p>';
-    el.modalPrompt.hidden = false;
-    el.promptHint.textContent = txt ? txt.length + ' 字' : '';
-  }
-
-  function copyPrompt() {
-    var txt = global.PROMPT || '';
-    if (!txt) return;
-    if (global.navigator && global.navigator.clipboard) {
-      global.navigator.clipboard.writeText(txt).then(function () { toast('已复制全文'); },
-        function () { fallbackCopy(txt); });
-    } else fallbackCopy(txt);
-  }
-  function fallbackCopy(txt) {
-    var ta = doc.createElement('textarea');
-    ta.value = txt;
-    doc.body.appendChild(ta);
-    ta.select();
-    try { doc.execCommand('copy'); toast('已复制全文'); } catch (e) { toast('复制失败，请手动选择'); }
-    doc.body.removeChild(ta);
-  }
-
   /* ---------------- 实况天气 ---------------- */
-  var liveData = null, livePlace = null, liveBusy = false;
+  var liveData = null, livePlace = null, liveBusy = false, liveUpdatedAt = 0, liveTimer = 0;
+
+  function liveRefreshMs() { return (global.LIVE && global.LIVE.REFRESH_MS) || 300000; }
+
+  /* 联网模式下每 5 分钟自动刷新一次（离开 M6 时回调会自动跳过） */
+  function scheduleLiveRefresh() {
+    clearTimeout(liveTimer);
+    if (!livePlace) return;
+    liveTimer = setTimeout(function () {
+      if (state.model === 'M6' && livePlace && !liveBusy) liveLoad(livePlace, true);
+    }, liveRefreshMs());
+  }
 
   function renderLiveShell() {
     buildPresets();
@@ -572,23 +604,35 @@
     renderLiveAll(data);
   }
 
-  function liveLoad(place) {
+  function liveLoad(place, silent) {
     if (!global.LIVE) { toast('实况模块未加载'); return; }
     livePlace = place;
     liveBusy = true;
     el.searchResults.hidden = true;
-    liveStatus('正在连接气象数据源（wttr.in / MET Norway）…');
-    el.cityPresets.querySelectorAll('.chip').forEach(function (b) {
-      b.classList.toggle('on', b.textContent === place.name);
-    });
+    if (!silent) {
+      liveStatus('正在连接气象数据源（Open-Meteo 主 / MET Norway 备）…');
+      el.cityPresets.querySelectorAll('.chip').forEach(function (b) {
+        b.classList.toggle('on', b.textContent === place.name);
+      });
+    } else {
+      el.liveSource.textContent = '自动更新中…';
+    }
     global.LIVE.load(place).then(function (data) {
       liveBusy = false;
       liveData = data;
+      liveUpdatedAt = Date.now();
       renderLiveAll(data);
-      toast('已获取 ' + place.name + ' 实况（' + data.source + '）');
+      scheduleLiveRefresh();
+      if (!silent) toast('已获取 ' + place.name + ' 实况（' + data.source + '）');
     }).catch(function (e) {
       liveBusy = false;
-      liveError(e && e.message ? e.message : '网络错误');
+      if (silent && liveData) {
+        /* 自动刷新失败：保留上一次数据，只提示，不清空页面 */
+        toast('自动更新失败，仍显示 ' + (liveData.current && liveData.current.obsTime ? '上次' : '上次') + '数据');
+        scheduleLiveRefresh();
+      } else {
+        liveError(e && e.message ? e.message : '网络错误');
+      }
     });
   }
 
@@ -621,7 +665,8 @@
     }).join('');
     var ft = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
     el.liveTime.textContent = '数据获取时间：' + ft.toLocaleString('zh-CN', { hour12: false }) +
-      (c.obsTime ? '（观测时间 ' + c.obsTime + '）' : '') +
+      (c.obsTime ? '（' + c.obsTime + '）' : '') +
+      ' · 每 ' + Math.round(liveRefreshMs() / 60000) + ' 分钟自动刷新' +
       (data.warnings && data.warnings.length ? ' · ' + data.warnings.join('；') : '');
 
     var j = data.judge || global.LIVE.judge(data);
@@ -726,16 +771,27 @@
       });
       g.stroke();
     }
-    /* 当前时刻竖线 */
-    var nowH = new Date().getHours();
-    for (var i2 = 0; i2 < hh.length; i2++) {
-      if (hh[i2].hour >= nowH) {
-        g.strokeStyle = 'rgba(255,255,255,0.35)';
-        g.setLineDash([4, 4]);
-        g.beginPath(); g.moveTo(X(i2), padT); g.lineTo(X(i2), h - padB); g.stroke();
-        g.setLineDash([]);
-        break;
+    /* 当前时刻：用数据自带的当前小时（站点当地）匹配，避免浏览器时区造成的错位 */
+    var nowKey = '';
+    try { nowKey = String((liveData.current && liveData.current.timeRaw) || '').slice(0, 13); } catch (e) { }
+    var nowIdx = -1;
+    if (nowKey) {
+      for (var ni = 0; ni < hh.length; ni++) {
+        if (String(hh[ni].time || '').slice(0, 13) === nowKey) { nowIdx = ni; break; }
       }
+    }
+    if (nowIdx < 0) {
+      var nowMs = Date.now();
+      for (var nj = hh.length - 1; nj >= 0; nj--) {
+        if (isFinite(hh[nj].ts) && hh[nj].ts <= nowMs) { nowIdx = nj; break; }
+      }
+    }
+    /* 当前时刻竖线 */
+    if (nowIdx >= 0) {
+      g.strokeStyle = 'rgba(255,255,255,0.35)';
+      g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(X(nowIdx), padT); g.lineTo(X(nowIdx), h - padB); g.stroke();
+      g.setLineDash([]);
     }
     /* 轴标注 */
     g.fillStyle = 'rgba(255,138,61,0.9)';
@@ -751,10 +807,10 @@
     }
     g.fillStyle = 'rgba(219,230,255,0.5)';
     g.textAlign = 'center';
-    g.fillText('0时', X(0), h - 6);
-    g.fillText('12时', X(Math.min(n - 1, Math.floor(n / 2))), h - 6);
-    g.fillText('24时', X(n - 1), h - 6);
-    el.liveChartNote.textContent = '橙线=气温（左轴 ℃） 蓝线=气压（右轴 hPa） 蓝柱=3 小时降水量；虚线=当前时刻';
+    g.fillText('−24h', X(0), h - 6);
+    if (nowIdx >= 0) g.fillText('现在', X(nowIdx), h - 6);
+    g.fillText('+12h', X(n - 1), h - 6);
+    el.liveChartNote.textContent = '橙线=气温（左轴 ℃） 蓝线=气压（右轴 hPa） 蓝柱=逐小时降水量；虚线=当前时刻（过去 24h → 未来 12h）';
   }
 
   function searchLive() {
@@ -812,17 +868,6 @@
       });
     });
 
-    el.mapBar.querySelectorAll('[data-map]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        state.mapMode = b.getAttribute('data-map');
-        el.mapBar.querySelectorAll('[data-map]').forEach(function (x) {
-          x.classList.toggle('on', x === b);
-        });
-        syncChrome();
-        syncURL();
-      });
-    });
-
     if (el.cycBar) {
       el.cycBar.querySelectorAll('[data-stage]').forEach(function (b) {
         b.addEventListener('click', function () {
@@ -837,10 +882,25 @@
       });
     }
 
-    el.monthSlider.addEventListener('input', function () {
-      state.month = parseInt(el.monthSlider.value, 10);
-      el.monthLabel.textContent = state.month + ' 月';
-    });
+    if (el.globeBar) {
+      el.globeBar.querySelectorAll('[data-gview]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          state.globe.view = b.getAttribute('data-gview');
+          if (m8) { try { m8.setView(state.globe.view); } catch (e) { } }
+          syncChrome();
+          syncURL();
+        });
+      });
+      el.globeBar.querySelectorAll('[data-gtoggle]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var key = b.getAttribute('data-gtoggle');
+          state.globe[key] = !state.globe[key];
+          if (m8) { try { m8.setToggles(state.globe); } catch (e) { } }
+          syncChrome();
+          syncURL();
+        });
+      });
+    }
 
     el.tSlider.addEventListener('input', function () {
       state.t = parseInt(el.tSlider.value, 10) / 1000;
@@ -891,10 +951,6 @@
     });
     $('#quizRestart').addEventListener('click', openQuiz);
 
-    el.btnPrompt.addEventListener('click', openPrompt);
-    $('#promptClose').addEventListener('click', function () { el.modalPrompt.hidden = true; });
-    $('#promptCopy').addEventListener('click', copyPrompt);
-
     el.knSearch.addEventListener('input', function () { filterKnowledge(el.knSearch.value); });
 
     $('#btnSearch').addEventListener('click', searchLive);
@@ -920,9 +976,10 @@
       else if (k === '1') setType('cold');
       else if (k === '2') setType('warm');
       else if (k === '3') setType('stationary');
+      else if (k === '7') setModel('M8');
       else if (k === 'k' || k === 'K') openQuiz();
       else if (k === 'Escape') {
-        el.modalQuiz.hidden = true; el.modalPrompt.hidden = true;
+        el.modalQuiz.hidden = true;
       }
     });
 
@@ -930,6 +987,26 @@
       new global.ResizeObserver(function () { resizeAll(); }).observe(el.viewArea);
     }
     global.addEventListener('resize', resizeAll);
+
+    global.addEventListener('online', function () {
+      syncNetBadge();
+      toast('网络已恢复：可获取实时天气');
+      if (state.model === 'M6' && livePlace && !liveBusy) liveLoad(livePlace, true);
+      if (m8 && state.globe.live) { try { m8.setToggles(state.globe); } catch (e) { } }
+    });
+    global.addEventListener('offline', function () {
+      syncNetBadge();
+      toast('网络已断开：教学核心仍可离线使用，实时天气将不可用');
+    });
+
+    /* 回到标签页时，若实况已过期则立即刷新（联网模式） */
+    doc.addEventListener('visibilitychange', function () {
+      if (doc.hidden) return;
+      if (state.model === 'M6' && livePlace && !liveBusy &&
+        Date.now() - liveUpdatedAt > liveRefreshMs()) {
+        liveLoad(livePlace, true);
+      }
+    });
   }
 
   /* ---------------- 启动 ---------------- */
@@ -941,6 +1018,7 @@
     syncViewButtons();
     syncSlider();
     updatePlayBtn();
+    syncNetBadge();
     bindEvents();
     setModel(state.model, true);
     resizeAll();
